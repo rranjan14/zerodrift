@@ -32,6 +32,8 @@ export class DocumentContent extends BaseModel { ... }
 
 `Instant` models get a `FullStore`. All others get a `PartialStore`. The `FullStore` loads everything at bootstrap; the `PartialStore` starts empty and fills on demand.
 
+**`Instant` is the only strategy that ships in a full-bootstrap payload** — every full-bootstrap call (initial, deferred phase 2, sync-group activation, newly-added-models follow-up) sends `onlyModels` restricted to Instant. Lazy / Partial / ExplicitlyRequested models load via `loadCollection` / `loadOne`; Local stays in IDB only; Ephemeral lives in the pool and is fed by SSE.
+
 **The critical insight:** for `Partial` and `Lazy` models, records exist in IndexedDB but their hydrated instances don't exist in the ObjectPool or in the heap. They only enter the heap when explicitly loaded.
 
 ## RefCollection

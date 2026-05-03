@@ -10,16 +10,20 @@ SSE is a long-lived HTTP connection where the server pushes line-delimited text 
 
 ```typescript
 connect() {
+  const loaded = [...db.loadedModels].sort();          // models with rows locally
   const url = `${baseUrl}/stream?lastSyncId=${meta.lastSyncId}`
-              + `&syncGroups=${meta.subscribedSyncGroups.join(",")}`;
-  
+              + `&syncGroups=${meta.subscribedSyncGroups.join(",")}`
+              + (loaded.length > 0
+                  ? `&onlyModels=${encodeURIComponent(loaded.join(","))}`
+                  : "");
+
   this.eventSource = new EventSource(url);
-  
+
   this.eventSource.onmessage = (event) => {
     const action = JSON.parse(event.data);
     this.enqueuePacket({ syncActions: [action] });
   };
-  
+
   this.eventSource.onerror = () => {
     this.eventSource.close();
     this.openEventSource(); // reconnect with fresh meta — picks up any new lastSyncId
@@ -27,11 +31,13 @@ connect() {
 }
 ```
 
-Two things worth noting:
+Three things worth noting:
 
 1. **`lastSyncId` in the URL.** The server uses this to catch the client up. If the tab was in the background for 5 minutes and missed 200 deltas, the server sends all 200 before switching to live streaming.
 
 2. **Manual reconnect on error.** The browser's built-in SSE reconnect reuses the original URL — stale `lastSyncId`. The engine closes and re-opens with a fresh URL read from `__meta`, which has the latest `lastSyncId` from the most recently processed packet.
+
+3. **`onlyModels` filter.** The `StorageAdapter` tracks which models have at least one row locally — seeded on `connect()` and grown by `writeModels` / `clearModelStore`. The catchup URL sends that set so the server skips deltas (catchup *and* live stream) for models the client never touched. When the set transitions mid-session (first `loadCollection` for a Partial model, or a schema-migration clear), `StoreManager` debounces a reconnect via `setTimeout(0)` so consecutive awaited writes coalesce into one round-trip. If the set is empty, the param is omitted and the server sends everything.
 
 ## Delta Packets
 

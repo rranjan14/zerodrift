@@ -240,7 +240,7 @@ new StoreManager({
 });
 ```
 
-`ctx.kind` is one of: `eagerReferenceLoad`, `eagerCollectionLoad`, `lazyCollectionLoad`, `lazyOwnedCollectionLoad`, `lazyBackRefLoad`, `deferredBootstrap`, `syncGroupFetch`, `ssePacketParse`, `sseConstruction`, `transactionSend`, `onSyncGroupDelete`. Each carries fields specific to its site (model name, parent id, raw SSE message, etc.). Without `onError`, internal failures are silently dropped (existing behavior preserved).
+`ctx.kind` is one of: `eagerReferenceLoad`, `eagerCollectionLoad`, `lazyCollectionLoad`, `lazyOwnedCollectionLoad`, `lazyBackRefLoad`, `deferredBootstrap`, `newModelsBootstrap`, `syncGroupFetch`, `ssePacketParse`, `sseConstruction`, `transactionSend`, `onSyncGroupDelete`. Each carries fields specific to its site (model name, parent id, raw SSE message, etc.). Without `onError`, internal failures are silently dropped (existing behavior preserved).
 
 Other lifecycle hooks on the same config:
 
