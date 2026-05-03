@@ -120,6 +120,65 @@ export async function diffModelVersions(
 }
 
 /**
+ * Tracks which models have at least one row in storage and notifies
+ * listeners on add/remove transitions. Composed by both `Database` and
+ * `MemoryAdapter` (the trio of mark/unmark/onChange + listener Set is
+ * adapter-agnostic, so the duplication doesn't have to live in each).
+ */
+export class LoadedModelsTracker {
+  private set = new Set<string>();
+  private listeners = new Set<() => void>();
+
+  get loadedModels(): ReadonlySet<string> {
+    return this.set;
+  }
+
+  /** Mark a model as having data. Notifies listeners on the first add. */
+  markLoaded(modelName: string): void {
+    if (this.set.has(modelName)) {
+      return;
+    }
+    this.set.add(modelName);
+    this.notify();
+  }
+
+  /** Mark a model as empty (e.g. after `clearModelStore`). */
+  markUnloaded(modelName: string): void {
+    if (!this.set.has(modelName)) {
+      return;
+    }
+    this.set.delete(modelName);
+    this.notify();
+  }
+
+  /** Empty the tracker without firing listeners — used at the start of
+   * `connect()` before re-seeding. */
+  reset(): void {
+    this.set.clear();
+  }
+
+  /** Seed without notifying — used by `connect()` to populate from storage. */
+  seed(modelName: string): void {
+    this.set.add(modelName);
+  }
+
+  onChange(cb: () => void): () => void {
+    this.listeners.add(cb);
+    return () => this.listeners.delete(cb);
+  }
+
+  private notify(): void {
+    for (const cb of this.listeners) {
+      try {
+        cb();
+      } catch {
+        // A misbehaving listener mustn't reject the write that triggered it.
+      }
+    }
+  }
+}
+
+/**
  * Pluggable storage backend for the sync engine.
  *
  * The default implementation (`Database`) uses IndexedDB and is suited for
@@ -141,6 +200,18 @@ export interface StorageAdapter {
    * full fetch for just these so adopters don't need to bump anything.
    */
   readonly newlyAddedModels: string[];
+  /**
+   * Names of models with at least one row in local storage. Seeded on
+   * `connect()` and grown as `writeModels` / `writeModelsIfAbsent` write
+   * records; shrinks when a store is fully cleared. The SSE catchup URL
+   * passes this set as `onlyModels` so the server skips deltas for models
+   * the client never touched.
+   */
+  readonly loadedModels: ReadonlySet<string>;
+  /** Subscribe to add/remove transitions on `loadedModels`. Returns an
+   * unsubscribe function. Per-row deletes don't fire — only first writes
+   * to a model and full clears do. */
+  onLoadedModelsChange(cb: () => void): () => void;
   writeModels(
     modelName: string,
     records: Record<string, unknown>[],
@@ -219,6 +290,15 @@ export class Database implements StorageAdapter {
    * their per-model `schemaVersion` bumped. Forces a Full bootstrap so the
    * cleared rows refill from the server. */
   migrationClearedModels = false;
+  private loadedTracker = new LoadedModelsTracker();
+
+  get loadedModels(): ReadonlySet<string> {
+    return this.loadedTracker.loadedModels;
+  }
+
+  onLoadedModelsChange(cb: () => void): () => void {
+    return this.loadedTracker.onChange(cb);
+  }
 
   constructor(workspaceId: string) {
     this.workspaceId = workspaceId;
@@ -233,6 +313,7 @@ export class Database implements StorageAdapter {
     // session's "force Full" signal.
     this.migrationClearedModels = false;
     this.newlyAddedModels = [];
+    this.loadedTracker.reset();
 
     // Gracefully handle environments without IndexedDB (Node.js, agents).
     // All methods guard on this.db == null, so the engine runs in-memory.
@@ -290,6 +371,38 @@ export class Database implements StorageAdapter {
       meta.modelSchemaVersions = currentModelVersions();
       await this.saveMeta(meta);
     }
+
+    await this.seedLoadedModels();
+  }
+
+  /** One IDB count() per store to seed `loadedModels` with anything that
+   * survived from a prior session. Runs once per connect. */
+  private async seedLoadedModels(): Promise<void> {
+    if (this.db == null) {
+      return;
+    }
+    const names = [...this.db.objectStoreNames].filter(
+      (name) => name !== "__transactions" && name !== "__partialIndexes",
+    );
+    if (names.length === 0) {
+      return;
+    }
+    const tx = this.db.transaction(names, "readonly");
+    await Promise.all(
+      names.map(
+        (name) =>
+          new Promise<void>((resolve, reject) => {
+            const r = tx.objectStore(name).count();
+            r.onsuccess = () => {
+              if ((r.result as number) > 0) {
+                this.loadedTracker.seed(name);
+              }
+              resolve();
+            };
+            r.onerror = () => reject(r.error);
+          }),
+      ),
+    );
   }
 
   /**
@@ -556,7 +669,7 @@ export class Database implements StorageAdapter {
     modelName: string,
     records: Record<string, unknown>[],
   ): Promise<void> {
-    if (!this.hasStore(modelName)) {
+    if (!this.hasStore(modelName) || records.length === 0) {
       return;
     }
     const tx = this.db!.transaction(modelName, "readwrite");
@@ -564,7 +677,8 @@ export class Database implements StorageAdapter {
     for (const record of records) {
       store.put(record);
     }
-    return this.waitForTransaction(tx);
+    await this.waitForTransaction(tx);
+    this.loadedTracker.markLoaded(modelName);
   }
 
   async writeModelsIfAbsent(
@@ -592,7 +706,8 @@ export class Database implements StorageAdapter {
     for (const record of newRecords) {
       store.put(record);
     }
-    return this.waitForTransaction(tx);
+    await this.waitForTransaction(tx);
+    this.loadedTracker.markLoaded(modelName);
   }
 
   async readAllModels(modelName: string): Promise<Record<string, unknown>[]> {
@@ -704,7 +819,8 @@ export class Database implements StorageAdapter {
     }
     const tx = this.db!.transaction(modelName, "readwrite");
     tx.objectStore(modelName).clear();
-    return this.waitForTransaction(tx);
+    await this.waitForTransaction(tx);
+    this.loadedTracker.markUnloaded(modelName);
   }
 
   // =========================================================================

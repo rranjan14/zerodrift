@@ -277,6 +277,8 @@ export class StoreManager {
   private _phase = BootstrapPhase.Idle;
   private _error: Error | null = null;
   private stopped = false;
+  private loadedModelsUnsub: (() => void) | null = null;
+  private syncReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * Hot cache of collection coverage, keyed by `"modelName:indexKey:value"`.
@@ -443,6 +445,12 @@ export class StoreManager {
           sseErrorReporter,
         );
         this.syncConnection.connect();
+        // Reconnect SSE when the loaded-models set changes — server uses
+        // it as `onlyModels` for both catchup and live stream. Debounce so
+        // a burst of writes (e.g. loadCollection batch) only reconnects once.
+        this.loadedModelsUnsub = this.database.onLoadedModelsChange(() =>
+          this.scheduleSyncReconnect(),
+        );
       }
       for (const streamConfig of this.config.modelStreams ?? []) {
         const stream = new ModelStream(
@@ -1727,6 +1735,12 @@ export class StoreManager {
   async teardown() {
     this.stopped = true;
     BaseModel.storeManager = null;
+    this.loadedModelsUnsub?.();
+    this.loadedModelsUnsub = null;
+    if (this.syncReconnectTimer != null) {
+      clearTimeout(this.syncReconnectTimer);
+      this.syncReconnectTimer = null;
+    }
     this.syncConnection?.disconnect();
     this.syncConnection = null;
     for (const stream of this.modelStreams) {
@@ -1742,5 +1756,23 @@ export class StoreManager {
     this.partialIndexCoverage.clear();
     this.loadedIds.clear();
     this.setPhase(BootstrapPhase.Idle);
+  }
+
+  /** Debounced reconnect for SSE when `loadedModels` mutates. A burst of
+   * transitions in the same tick (or across awaited writes in the same
+   * async chain) coalesces into a single reconnect. setTimeout — not
+   * queueMicrotask — so consecutive `await db.writeModels(A); await
+   * db.writeModels(B)` doesn't reconnect twice. */
+  private scheduleSyncReconnect(): void {
+    if (this.syncReconnectTimer != null || this.syncConnection == null) {
+      return;
+    }
+    this.syncReconnectTimer = setTimeout(() => {
+      this.syncReconnectTimer = null;
+      if (this.stopped) {
+        return;
+      }
+      this.syncConnection?.reconnect();
+    }, 0);
   }
 }

@@ -11,6 +11,7 @@
 
 import {
   BootstrapType,
+  LoadedModelsTracker,
   diffModelVersions,
   currentModelVersions,
   type DatabaseMeta,
@@ -34,11 +35,26 @@ export class MemoryAdapter implements StorageAdapter {
   /** Names of models added since the last connect — StoreManager target-fetches
    * these so adopters don't have to bump schemaVersion by hand. */
   newlyAddedModels: string[] = [];
+  private loadedTracker = new LoadedModelsTracker();
+
+  get loadedModels(): ReadonlySet<string> {
+    return this.loadedTracker.loadedModels;
+  }
+
+  onLoadedModelsChange(cb: () => void): () => void {
+    return this.loadedTracker.onChange(cb);
+  }
 
   async connect(): Promise<void> {
     this.connected = true;
     this.migrationClearedModels = false;
     this.newlyAddedModels = [];
+    this.loadedTracker.reset();
+    for (const [name, bucket] of this.models) {
+      if (bucket.size > 0) {
+        this.loadedTracker.seed(name);
+      }
+    }
     if (this.meta != null) {
       const { cleared, newlyAdded } = await diffModelVersions(
         this,
@@ -88,6 +104,9 @@ export class MemoryAdapter implements StorageAdapter {
     modelName: string,
     records: Record<string, unknown>[],
   ): Promise<void> {
+    if (records.length === 0) {
+      return;
+    }
     let bucket = this.models.get(modelName);
     if (bucket == null) {
       bucket = new Map();
@@ -96,22 +115,31 @@ export class MemoryAdapter implements StorageAdapter {
     for (const record of records) {
       bucket.set(record.id as string, record);
     }
+    this.loadedTracker.markLoaded(modelName);
   }
 
   async writeModelsIfAbsent(
     modelName: string,
     records: Record<string, unknown>[],
   ): Promise<void> {
+    if (records.length === 0) {
+      return;
+    }
     let bucket = this.models.get(modelName);
     if (bucket == null) {
       bucket = new Map();
       this.models.set(modelName, bucket);
     }
+    let inserted = false;
     for (const record of records) {
       const id = record.id as string;
       if (!bucket.has(id)) {
         bucket.set(id, record);
+        inserted = true;
       }
+    }
+    if (inserted) {
+      this.loadedTracker.markLoaded(modelName);
     }
   }
 
@@ -168,6 +196,7 @@ export class MemoryAdapter implements StorageAdapter {
 
   async clearModelStore(modelName: string): Promise<void> {
     this.models.get(modelName)?.clear();
+    this.loadedTracker.markUnloaded(modelName);
   }
 
   async cacheTransaction(data: unknown): Promise<number | null> {

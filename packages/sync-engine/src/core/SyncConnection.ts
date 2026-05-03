@@ -100,7 +100,16 @@ export class SyncConnection extends BaseSSEConnection {
     const meta = this.database.currentMeta;
     const lastSyncId = meta?.lastSyncId ?? 0;
     const syncGroups = (meta?.subscribedSyncGroups ?? []).join(",");
-    return `${this.url}?lastSyncId=${lastSyncId}&syncGroups=${encodeURIComponent(syncGroups)}`;
+    // Tell the server which models the client has data for. The server uses
+    // this for both catchup deltas and the live stream; absent → no filter.
+    // Sort for a stable URL — equivalent sets must produce identical URLs
+    // so the engine doesn't churn reconnects when iteration order shifts.
+    const loaded = [...this.database.loadedModels].sort();
+    const onlyModels =
+      loaded.length > 0
+        ? `&onlyModels=${encodeURIComponent(loaded.join(","))}`
+        : "";
+    return `${this.url}?lastSyncId=${lastSyncId}&syncGroups=${encodeURIComponent(syncGroups)}${onlyModels}`;
   }
 
   protected onMessage(data: string): void {
