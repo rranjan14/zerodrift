@@ -69,8 +69,40 @@ export enum TransactionState {
 }
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/**
+ * Default `transientIndexDepth` — how deep `RefCollection`s walk the parent's
+ * outgoing FK chain to auto-derive covering axes when no explicit value is
+ * passed via `StoreManagerConfig.transientIndexDepth`. See that field for
+ * the trade-offs. Lives in types.ts so both the StoreManager getter and the
+ * BaseModel fallback can reference the same constant without a cycle.
+ */
+export const DEFAULT_TRANSIENT_INDEX_DEPTH = 3;
+
+// ---------------------------------------------------------------------------
 // Interfaces
 // ---------------------------------------------------------------------------
+
+/**
+ * One auto-derived covering axis for a `RefCollection`. Each path encodes
+ * how to reach a value on the parent (or a deeper ancestor) that matches an
+ * indexed FK on the child. Resolved at `RefCollection.hydrate()`:
+ *
+ *   walk the `hops` chain through the pool; the last hop's `fk` value is
+ *   used as the covering query — `Comment[axis = resolvedValue]`.
+ *
+ * For depth 1 (`hops.length === 1`), resolution is `readFk(parent, hops[0].fk)`.
+ * For depth 2+, intermediate hops resolve through `pool.getById(throughModel, id)`.
+ */
+export interface CoveringPath {
+  /** The FK name on the child model — also `hops[hops.length - 1].fk`. */
+  axis: string;
+  /** Chain of FK lookups starting from the parent. The last hop is the
+   * leaf; preceding hops are pool look-ups that resolve to the next model. */
+  hops: { fk: string; throughModel: string }[];
+}
 
 /** Metadata about a single property, stored in the ModelRegistry. */
 export interface PropertyMeta {
@@ -148,6 +180,10 @@ export interface IObjectPool {
 /** Store manager interface as seen from BaseModel. Avoids importing StoreManager directly. */
 export interface IStoreManager {
   readonly objectPool: IObjectPool;
+  /** How deep `RefCollection` walks the parent FK graph to auto-derive
+   * covering axes. Configurable via `StoreManagerConfig.transientIndexDepth`
+   * (default 3). Capped at the registry-walk implementation's max depth. */
+  readonly transientIndexDepth: number;
   commitCreate(model: BaseModel): void;
   commitUpdate(
     modelId: string,

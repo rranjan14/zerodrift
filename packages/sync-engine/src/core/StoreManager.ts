@@ -20,6 +20,7 @@
  */
 
 import { ModelRegistry } from "./ModelRegistry";
+import { DEFAULT_TRANSIENT_INDEX_DEPTH } from "./types";
 import { ObjectPool } from "./ObjectPool";
 import {
   Database,
@@ -185,6 +186,16 @@ export interface StoreManagerConfig {
   undoLimit?: number;
 
   /**
+   * How deep `RefCollection`s walk the parent's outgoing FK chain when
+   * auto-deriving covering axes (denormalization detection). Defaults to 3,
+   * matching Linear. Set to 1 to only consider the parent's direct FKs;
+   * set to 0 to disable auto-derivation entirely (manual `coveringIndexes`
+   * decorator option still applies). Higher values exponentially increase
+   * the registry-walk surface and produce diminishing returns.
+   */
+  transientIndexDepth?: number;
+
+  /**
    * Two-phase full bootstrap. If provided, the first fetch loads only
    * the critical models (everything NOT in this list). Once hydrated
    * and the UI is interactive, a second background fetch loads these
@@ -269,6 +280,10 @@ export class StoreManager {
   readonly objectPool: ObjectPool;
   readonly database: StorageAdapter;
   readonly transactionQueue: TransactionQueue;
+
+  get transientIndexDepth(): number {
+    return this.config.transientIndexDepth ?? DEFAULT_TRANSIENT_INDEX_DEPTH;
+  }
 
   private stores = new Map<string, ModelStore>();
   private syncConnection: SyncConnection | null = null;

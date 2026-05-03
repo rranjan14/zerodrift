@@ -17,6 +17,7 @@
 import { ModelRegistry } from "./ModelRegistry";
 import {
   PropertyType,
+  DEFAULT_TRANSIENT_INDEX_DEPTH,
   type PropertyChange,
   type IObjectPool,
   type IStoreManager,
@@ -210,12 +211,25 @@ export class BaseModel {
         // ── ReferenceCollection → create RefCollection ──
         // e.g. Team.issues → RefCollection("Issue", "teamId")
         // The collection's hydrate() stores the parent ID and computes
-        // the partial index values for future IDB queries.
+        // the partial index values for future IDB queries — manual
+        // coveringIndexes plus auto-derived paths from the FK graph walk.
         case PropertyType.ReferenceCollection: {
+          const depth =
+            BaseModel.storeManager?.transientIndexDepth ??
+            DEFAULT_TRANSIENT_INDEX_DEPTH;
+          const derivedPaths =
+            depth > 0
+              ? ModelRegistry.getDerivedCoveringPaths(
+                  meta.name,
+                  prop.referenceTo!,
+                  depth,
+                )
+              : [];
           const collection = new RefCollection(
             prop.referenceTo!,
             prop.inverseOf!,
             prop.coveringIndexes ?? [],
+            derivedPaths,
           );
           collection.hydrate(this);
 

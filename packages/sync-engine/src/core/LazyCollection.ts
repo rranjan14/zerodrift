@@ -32,6 +32,42 @@
 import { observable, runInAction, makeObservable } from "mobx";
 import type { BaseModel } from "./BaseModel";
 import { readFk } from "./ObjectPool";
+import type { CoveringPath } from "./types";
+
+/** Walk a `CoveringPath` from `parent` through the pool, returning the
+ * leaf FK value or null if any link is missing. Depth-1 paths are a single
+ * `readFk(parent, hops[0].fk)`. Deeper paths use intermediate
+ * `pool.getById(throughModel, id)` lookups; if the intermediate isn't in
+ * the pool, the path is silently skipped (its covering query will be
+ * issued only when the chain becomes resolvable on a later access). */
+function resolveCoveringPath(
+  parent: BaseModel,
+  path: CoveringPath,
+): string | null {
+  // Depth-1 fast path — no pool walk needed; just read the FK off `parent`.
+  if (path.hops.length === 1) {
+    return readFk(parent, path.hops[0].fk);
+  }
+  let current: BaseModel = parent;
+  // Deeper paths walk through `pool.getById`; bail silently if any link
+  // is missing (the covering query is just skipped for now).
+  for (let i = 0; i < path.hops.length - 1; i++) {
+    const id = readFk(current, path.hops[i].fk);
+    if (id == null) {
+      return null;
+    }
+    const pool = current.store;
+    if (pool == null) {
+      return null;
+    }
+    const next = pool.getById(path.hops[i].throughModel, id);
+    if (next == null) {
+      return null;
+    }
+    current = next as BaseModel;
+  }
+  return readFk(current, path.hops[path.hops.length - 1].fk);
+}
 
 // ---------------------------------------------------------------------------
 // Loading state
@@ -189,6 +225,12 @@ export class RefCollection<
   /** Additional FK axes on the parent that the loader should also query. */
   readonly coveringIndexes: string[];
 
+  /** Auto-derived covering paths from the registry FK walk. Each path is
+   * resolved at hydrate time — depth 1 paths read directly from the parent;
+   * deeper paths walk the pool. Manual `coveringIndexes` and these paths
+   * are union'd into `partialIndexValues`, deduped by (axis, value). */
+  readonly derivedCoveringPaths: CoveringPath[];
+
   /** The ID of the parent model (e.g. team.id). Set during hydrate(). */
   parentId: string = "";
 
@@ -210,10 +252,12 @@ export class RefCollection<
     referencedModelName: string,
     inverseKey: string,
     coveringIndexes: string[] = [],
+    derivedCoveringPaths: CoveringPath[] = [],
   ) {
     super(referencedModelName);
     this.inverseKey = inverseKey;
     this.coveringIndexes = coveringIndexes;
+    this.derivedCoveringPaths = derivedCoveringPaths;
   }
 
   /**
@@ -225,10 +269,27 @@ export class RefCollection<
     const values: Array<{ key: string; value: string }> = [
       { key: this.inverseKey, value: parent.id },
     ];
+    // Note: Set's constructor takes an *iterable*. A bare string would
+    // iterate as characters, so seed with a one-element array.
+    const seen = new Set<string>([`${this.inverseKey}=${parent.id}`]);
+    const push = (key: string, value: string) => {
+      const sig = `${key}=${value}`;
+      if (seen.has(sig)) {
+        return;
+      }
+      seen.add(sig);
+      values.push({ key, value });
+    };
     for (const axis of this.coveringIndexes) {
       const v = readFk(parent, axis);
       if (v != null) {
-        values.push({ key: axis, value: v });
+        push(axis, v);
+      }
+    }
+    for (const path of this.derivedCoveringPaths) {
+      const v = resolveCoveringPath(parent, path);
+      if (v != null) {
+        push(path.axis, v);
       }
     }
     this.partialIndexValues = values;

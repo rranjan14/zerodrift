@@ -172,6 +172,27 @@ The kick-off is fire-and-forget — `makeModelObservable()` is synchronous, so o
 
 **When to use eager.** Reach for the eager decorator when a parent is useless without its children (a Document without its Blocks, an Order without its LineItems) and you want a single `await` to settle the whole subtree. Use `@Lazy*` for relationships that are only sometimes opened (a Team's full Issue list when most pages only need a count).
 
+## Auto-derived covering indexes (`transientIndexDepth`)
+
+`RefCollection`s union additional index queries on top of the direct `inverseOf` axis. Adopters can declare them manually:
+
+```ts
+@LazyReferenceCollection("Comment", {
+  inverseOf: "issueId",
+  coveringIndexes: ["teamId"],   // Comment also has indexed teamId (denormalized)
+})
+public comments: RefCollection<Comment>;
+```
+
+The engine ALSO auto-derives these from the FK graph at `RefCollection` construction. Walking the parent's outgoing FK chain up to `transientIndexDepth` (default 3, set via `StoreManagerConfig.transientIndexDepth`), each hop's FK name is intersected with the child's indexed properties. Every match becomes a `CoveringPath` resolved at `hydrate()`:
+
+- **Depth 1** — the parent's direct FK names that match a child indexed prop. Read off the parent: `readFk(parent, axis)`.
+- **Depth 2+** — chains like `Issue.teamId → Team.organizationId` where the child has indexed `organizationId`. Resolved by walking through `pool.getById(throughModel, id)` for each intermediate hop. If any intermediate model isn't in the pool, the path is silently skipped (its query will fire next time the chain is resolvable).
+
+Manual `coveringIndexes` and auto-derived paths are union'd, deduped by `(key, value)` signature. The manual list is the override — adopters can declare an explicit smaller set when they want to scope back, or larger set when they have axes the registry can't see (computed properties, etc.).
+
+`transientIndexDepth = 0` disables auto-derivation entirely; manual `coveringIndexes` still applies.
+
 ## The `usedForPartialIndexes` Flag
 
 ```typescript

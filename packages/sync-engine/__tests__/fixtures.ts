@@ -352,6 +352,58 @@ export class TestEagerHolder extends BaseModel {
   public ownedLeaves: OwnedRefs<TestEagerLeaf>;
 }
 
+// ── Denormalized-FK chain (auto-coveringIndexes / transient-index test bed) ──
+//
+// TestDenormChild has BOTH `parentId` (its direct FK) AND a denormalized
+// `grandparentId` field. TestDenormParent has `grandparentId` as its own FK to
+// TestDenormGrandparent. So the registry walk from TestDenormParent → child
+// finds `grandparentId` as a depth-1 auto-derived covering axis.
+//
+// Depth-2 example: TestDenormGrandparent.greatId points to a great-grandparent;
+// the child has indexed `greatId` (denormalized 2 hops). Walking from a great-
+// grandparent collection of children would resolve via two pool hops.
+
+@ClientModel({ loadStrategy: LoadStrategy.Instant })
+export class TestDenormGreatParent extends BaseModel {
+  @Property()
+  public name = "";
+}
+
+@ClientModel({ loadStrategy: LoadStrategy.Instant })
+export class TestDenormGrandparent extends BaseModel {
+  @Property({ indexed: true })
+  public greatId = "";
+
+  @LazyReference("TestDenormGreatParent")
+  public great: TestDenormGreatParent;
+}
+
+@ClientModel({ loadStrategy: LoadStrategy.Instant })
+export class TestDenormParent extends BaseModel {
+  @Property({ indexed: true })
+  public grandparentId = "";
+
+  @LazyReference("TestDenormGrandparent")
+  public grandparent: TestDenormGrandparent;
+
+  @LazyReferenceCollection("TestDenormChild", { inverseOf: "parentId" })
+  public children: RefCollection<TestDenormChild>;
+}
+
+@ClientModel({ loadStrategy: LoadStrategy.Partial })
+export class TestDenormChild extends BaseModel {
+  @Property({ indexed: true })
+  public parentId = "";
+
+  /** Denormalized 1 hop — auto-derived from TestDenormParent.grandparentId. */
+  @Property({ indexed: true })
+  public grandparentId = "";
+
+  /** Denormalized 2 hops — auto-derived through TestDenormGrandparent.greatId. */
+  @Property({ indexed: true })
+  public greatId = "";
+}
+
 @ClientModel({ loadStrategy: LoadStrategy.Instant })
 export class TestNote extends BaseModel {
   @Property()

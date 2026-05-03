@@ -10,7 +10,13 @@
  */
 
 import type { BaseModel } from "./BaseModel";
-import { type ModelMeta, type PropertyMeta, LoadStrategy } from "./types";
+import {
+  type ModelMeta,
+  type PropertyMeta,
+  type CoveringPath,
+  LoadStrategy,
+  PropertyType,
+} from "./types";
 
 class ModelRegistryImpl {
   private models = new Map<string, ModelMeta>();
@@ -33,7 +39,9 @@ class ModelRegistryImpl {
         schemaVersion: 1,
       });
     }
-    this.cachedHash = null; // invalidate hash on any change
+    // Any registry change invalidates downstream caches.
+    this.cachedHash = null;
+    this.coveringPathsCache.clear();
     return this.models.get(name)!;
   }
 
@@ -45,6 +53,7 @@ class ModelRegistryImpl {
     }
     meta.properties.set(prop.name, prop);
     this.cachedHash = null;
+    this.coveringPathsCache.clear();
   }
 
   /**
@@ -70,6 +79,7 @@ class ModelRegistryImpl {
     }
     meta.properties.set(propertyName, { ...existing, ...updates });
     this.cachedHash = null;
+    this.coveringPathsCache.clear();
   }
 
   registerAction(modelName: string, name: string) {
@@ -107,6 +117,99 @@ class ModelRegistryImpl {
       }
     }
     return out;
+  }
+
+  private coveringPathsCache = new Map<string, CoveringPath[]>();
+
+  /**
+   * Auto-derive covering axes for a `RefCollection<child>` declared on
+   * `parentModel`. Walks `parentModel`'s outgoing FK chain up to `maxDepth`
+   * hops; at each level checks whether the child has the same FK name as an
+   * indexed property (denormalization). Each match becomes a `CoveringPath`
+   * resolved later at hydrate time.
+   *
+   * Cycle-detected (a model in the chain isn't traversed twice). Cached per
+   * `(parent, child, depth)` triple. Result is union'd with the manual
+   * `coveringIndexes` decorator option at the call site.
+   */
+  getDerivedCoveringPaths(
+    parentModelName: string,
+    childModelName: string,
+    maxDepth: number,
+  ): CoveringPath[] {
+    if (maxDepth < 1) {
+      return [];
+    }
+    const key = `${parentModelName}|${childModelName}|${maxDepth}`;
+    const cached = this.coveringPathsCache.get(key);
+    if (cached != null) {
+      return cached;
+    }
+    const childMeta = this.models.get(childModelName);
+    if (childMeta == null) {
+      this.coveringPathsCache.set(key, []);
+      return [];
+    }
+    const childIndexed = new Set<string>();
+    for (const prop of childMeta.properties.values()) {
+      if (prop.indexed === true) {
+        childIndexed.add(prop.name);
+      }
+    }
+    if (childIndexed.size === 0) {
+      this.coveringPathsCache.set(key, []);
+      return [];
+    }
+    const out: CoveringPath[] = [];
+    this.walkCoveringPaths(
+      parentModelName,
+      childIndexed,
+      maxDepth,
+      [],
+      new Set([parentModelName]),
+      out,
+    );
+    this.coveringPathsCache.set(key, out);
+    return out;
+  }
+
+  private walkCoveringPaths(
+    currentModel: string,
+    childIndexed: ReadonlySet<string>,
+    remainingDepth: number,
+    soFar: { fk: string; throughModel: string }[],
+    visited: Set<string>,
+    out: CoveringPath[],
+  ): void {
+    if (remainingDepth <= 0) {
+      return;
+    }
+    const meta = this.models.get(currentModel);
+    if (meta == null) {
+      return;
+    }
+    for (const prop of meta.properties.values()) {
+      if (prop.type !== PropertyType.Reference || prop.referenceTo == null) {
+        continue;
+      }
+      const hop = { fk: prop.name, throughModel: prop.referenceTo };
+      const nextHops = [...soFar, hop];
+      if (childIndexed.has(prop.name)) {
+        out.push({ axis: prop.name, hops: nextHops });
+      }
+      if (remainingDepth > 1 && !visited.has(prop.referenceTo)) {
+        visited.add(prop.referenceTo);
+        this.walkCoveringPaths(
+          prop.referenceTo,
+          childIndexed,
+          remainingDepth - 1,
+          nextHops,
+          visited,
+          out,
+        );
+        visited.delete(prop.referenceTo);
+      }
+    }
   }
 
   /**
