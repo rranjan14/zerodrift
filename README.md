@@ -337,11 +337,24 @@ const sm = new StoreManager({
 
 If your app has a single fixed scope per session, you can omit it.
 
-### Roadmap — compound index-key fetches
+### Compound index-key fetches
 
-Auto-derived covering indexes (see [`agent-docs/04-lazy-loading.md`](agent-docs/04-lazy-loading.md)) are purely client-side: `RefCollection`s walk the parent's FK graph and emit additional partial-index queries when the child denormalizes a parent FK. Adopters need only set `@Property({ indexed: true })` on the denormalized field; no protocol change.
+Two layers of compound parity, both opt-in:
 
-What's not yet built: **server-side compound index-key fetches** — e.g. `?indexedKey=issue.cycleId&keyValue=X&modelName=Comment`, where the server joins through a parent FK so one request returns all comments for every issue in a cycle. Today the engine fans out per-parent batches via `BatchModelLoader` (correct, just N requests). Implementing this needs a backend that handles dotted `indexedKey` paths plus a `serverSupportsCompoundIndexKeys` opt-in on the client so per-parent fan-out stays the default for backends without JOIN support.
+1. **Client-side auto-derived covering indexes** — `RefCollection`s walk the parent's FK graph (`transientIndexDepth`, default 3) and emit additional partial-index queries when the child denormalizes a parent FK. Adopters need only set `@Property({ indexed: true })` on the denormalized field. No protocol change. See [`agent-docs/04-lazy-loading.md`](agent-docs/04-lazy-loading.md).
+
+2. **Server-side compound queries** — when ≥ `compoundIndexFetchThreshold` (default 5) concurrent `loadCollection` requests share a parent FK value, the engine collapses them into one dotted-path query (e.g. 50 `Comment[taskId=Tx]` → one `Comment[taskId.projectId=P1]`). The server resolves the dotted path via a JOIN and returns the union; per-waiter filtering narrows each caller's slice. Opt in with `serverSupportsCompoundIndexKeys: true`; backends without JOIN support keep per-parent fan-out.
+
+```ts
+new StoreManager({
+  // ...
+  onDemandIndexBatchFetcher: async (queries) => fetch(...).then(r => r.json()),
+  serverSupportsCompoundIndexKeys: true,
+  // compoundIndexFetchThreshold: 5,  // optional, defaults to 5
+});
+```
+
+The server contract: `indexKey` may be a dotted path. Each segment is an FK on the previous model. The engine only currently emits one-hop dotted paths (e.g. `taskId.projectId`); deeper paths are a future revision.
 
 ## Documentation
 

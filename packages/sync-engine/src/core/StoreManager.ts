@@ -53,6 +53,10 @@ import {
   BatchModelLoader,
   type IndexBatchFetcher,
 } from "./BatchModelLoader";
+import {
+  COMPOUND_FETCH_THRESHOLD,
+  wrapCompoundFetcher,
+} from "./CompoundIndexFetcher";
 import { BaseModel } from "./BaseModel";
 import {
   BootstrapPhase,
@@ -249,6 +253,29 @@ export interface StoreManagerConfig {
    */
   onDemandIndexBatchFetcher?: IndexBatchFetcher;
 
+  /**
+   * Adopter-side opt-in: the configured `onDemandIndexBatchFetcher` (and
+   * server) accepts dotted `indexKey` paths like `"issueId.cycleId"`,
+   * resolving them via a server-side join. When set, the engine examines
+   * each batched fetch and — if ≥ COMPOUND_FETCH_THRESHOLD pending requests
+   * share a parent FK value — replaces them with a single compound query
+   * `Comment[issueId.cycleId=X]`. The response is a superset; per-waiter
+   * filtering (already in `BatchModelLoader`) narrows to each direct triple.
+   *
+   * Default `false` — backends without JOIN support keep per-parent
+   * fan-out.
+   */
+  serverSupportsCompoundIndexKeys?: boolean;
+
+  /**
+   * Minimum number of pending requests sharing a parent FK value before
+   * the engine collapses them into a single compound query. Below this,
+   * the per-parent fan-out wins because the compound response would
+   * over-fetch. Only consulted when `serverSupportsCompoundIndexKeys` is
+   * true. Defaults to {@link COMPOUND_FETCH_THRESHOLD}.
+   */
+  compoundIndexFetchThreshold?: number;
+
   onPhaseChange?: (phase: BootstrapPhase, detail?: string) => void;
   onDeltaPacket?: (packet: DeltaPacket) => void;
   onReady?: () => void;
@@ -346,9 +373,15 @@ export class StoreManager {
       this.transactionQueue.setActionHandlers(config.undoableActions);
     }
     if (config.onDemandIndexBatchFetcher != null) {
-      this.indexBatchLoader = new BatchModelLoader(
-        config.onDemandIndexBatchFetcher,
-      );
+      const fetcher =
+        config.serverSupportsCompoundIndexKeys === true
+          ? wrapCompoundFetcher(
+              config.onDemandIndexBatchFetcher,
+              this.objectPool,
+              config.compoundIndexFetchThreshold ?? COMPOUND_FETCH_THRESHOLD,
+            )
+          : config.onDemandIndexBatchFetcher;
+      this.indexBatchLoader = new BatchModelLoader(fetcher);
     }
     BaseModel.storeManager = this; // wire auto-commit
   }
