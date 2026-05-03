@@ -1064,7 +1064,7 @@ export class StoreManager {
         currentMeta: this.database.currentMeta,
       });
     } catch (err) {
-      this.emitError(err, { kind: "deferredBootstrap", modelNames });
+      this.emitError(err, { kind: "newModelsBootstrap", modelNames });
       return;
     }
     await this.applyBootstrapResponse(res);

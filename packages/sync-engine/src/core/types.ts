@@ -186,6 +186,7 @@ export type EngineErrorContext =
   | { kind: "lazyOwnedCollectionLoad"; modelName: string }
   | { kind: "lazyBackRefLoad"; modelName: string; parentId: string }
   | { kind: "deferredBootstrap"; modelNames: string[] }
+  | { kind: "newModelsBootstrap"; modelNames: string[] }
   | { kind: "syncGroupFetch"; groups: string[] }
   | { kind: "ssePacketParse"; url: string; raw: string }
   | { kind: "sseConstruction"; url: string }
