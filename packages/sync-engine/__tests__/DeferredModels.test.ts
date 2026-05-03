@@ -8,7 +8,9 @@
  *   4. Records already in IDB (e.g. from SSE) are not wiped before writing
  *   5. lastSyncId is advanced if the server returns a higher value
  *
- * Uses TestActivity (LoadStrategy.Partial) as the deferred model fixture.
+ * Uses TestNote (LoadStrategy.Instant) as the deferred model fixture —
+ * full bootstrap only ever ships Instant models, so the deferred phase-2
+ * list must consist of Instant models too.
  * All tests trigger a Full bootstrap (no pre-existing meta) so that
  * fetchDeferredModels runs as phase 2.
  */
@@ -32,7 +34,7 @@ type Phase2Response = Phase1Response & {
 };
 
 /**
- * Build a StoreManager backed by MemoryAdapter with TestActivity deferred.
+ * Build a StoreManager backed by MemoryAdapter with TestNote deferred.
  * Does NOT pre-seed meta so bootstrap() triggers a Full bootstrap.
  * If seedBeforeBootstrap is provided, it seeds IDB after connect() but
  * before bootstrap() to simulate records written by SSE from a prior session.
@@ -54,7 +56,7 @@ async function makeManager(
     workspaceId: crypto.randomUUID(),
     bootstrapFetcher,
     storageAdapter: adapter,
-    deferredModels: ["TestActivity"],
+    deferredModels: ["TestNote"],
   });
 
   // Connect so we can seed IDB before bootstrap runs
@@ -102,7 +104,7 @@ describe("deferred models — phase 2 fetch", () => {
       {
         lastSyncId: 10,
         subscribedSyncGroups: [],
-        models: { TestActivity: [] },
+        models: { TestNote: [] },
       },
     );
     manager = m;
@@ -112,7 +114,7 @@ describe("deferred models — phase 2 fetch", () => {
     const [type, options] = bootstrapFetcher.mock.calls[1];
     expect(type).toBe(BootstrapType.Full);
     expect(options).toMatchObject({
-      onlyModels: ["TestActivity"],
+      onlyModels: ["TestNote"],
       sinceSyncId: 10,
     });
   });
@@ -124,13 +126,13 @@ describe("deferred models — phase 2 fetch", () => {
         lastSyncId: 10,
         subscribedSyncGroups: [],
         models: {
-          TestActivity: [{ id: "a1", text: "From snapshot", taskId: "t1" }],
+          TestNote: [{ id: "a1", text: "From snapshot", taskId: "t1" }],
         },
       },
       {
         // Simulate a record already in IDB (e.g. written by SSE before phase 2)
         seedBeforeBootstrap: {
-          TestActivity: [{ id: "sse-written", text: "From SSE", taskId: "t1" }],
+          TestNote: [{ id: "sse-written", text: "From SSE", taskId: "t1" }],
         },
       },
     );
@@ -140,12 +142,12 @@ describe("deferred models — phase 2 fetch", () => {
 
     // Snapshot record is written
     expect(
-      await manager.database.readModel("TestActivity", "a1"),
+      await manager.database.readModel("TestNote", "a1"),
     ).toMatchObject({ text: "From snapshot" });
 
     // Pre-existing SSE-written record is NOT wiped
     expect(
-      await manager.database.readModel("TestActivity", "sse-written"),
+      await manager.database.readModel("TestNote", "sse-written"),
     ).not.toBeNull();
   });
 
@@ -156,13 +158,13 @@ describe("deferred models — phase 2 fetch", () => {
         lastSyncId: 10,
         subscribedSyncGroups: [],
         models: {
-          TestActivity: [{ id: "a1", text: "Kept", taskId: "t1" }],
+          TestNote: [{ id: "a1", text: "Kept", taskId: "t1" }],
         },
-        deletedIds: { TestActivity: ["a-deleted"] },
+        deletedIds: { TestNote: ["a-deleted"] },
       },
       {
         seedBeforeBootstrap: {
-          TestActivity: [{ id: "a-deleted", text: "Stale", taskId: "t1" }],
+          TestNote: [{ id: "a-deleted", text: "Stale", taskId: "t1" }],
         },
       },
     );
@@ -171,10 +173,10 @@ describe("deferred models — phase 2 fetch", () => {
     await waitForPhase2(bootstrapFetcher);
 
     expect(
-      await manager.database.readModel("TestActivity", "a1"),
+      await manager.database.readModel("TestNote", "a1"),
     ).not.toBeNull();
     expect(
-      await manager.database.readModel("TestActivity", "a-deleted"),
+      await manager.database.readModel("TestNote", "a-deleted"),
     ).toBeNull();
   });
 
@@ -185,7 +187,7 @@ describe("deferred models — phase 2 fetch", () => {
         lastSyncId: 10,
         subscribedSyncGroups: [],
         models: {
-          TestActivity: [{ id: "a1", text: "OK", taskId: "t1" }],
+          TestNote: [{ id: "a1", text: "OK", taskId: "t1" }],
         },
         // no deletedIds field
       },
@@ -195,7 +197,7 @@ describe("deferred models — phase 2 fetch", () => {
     await waitForPhase2(bootstrapFetcher);
 
     expect(
-      await manager.database.readModel("TestActivity", "a1"),
+      await manager.database.readModel("TestNote", "a1"),
     ).not.toBeNull();
   });
 
@@ -205,7 +207,7 @@ describe("deferred models — phase 2 fetch", () => {
       {
         lastSyncId: 20,
         subscribedSyncGroups: [],
-        models: { TestActivity: [] },
+        models: { TestNote: [] },
       },
     );
     manager = m;
@@ -224,7 +226,7 @@ describe("deferred models — phase 2 fetch", () => {
       {
         lastSyncId: 10,
         subscribedSyncGroups: [],
-        models: { TestActivity: [] },
+        models: { TestNote: [] },
       },
     );
     manager = m;

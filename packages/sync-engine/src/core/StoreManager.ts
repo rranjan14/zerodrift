@@ -53,7 +53,6 @@ import {
   LoadStrategy,
   PropertyType,
   toError,
-  type ModelMeta,
   type PropertyChange,
   type EngineErrorContext,
   type EngineErrorHandler,
@@ -473,43 +472,26 @@ export class StoreManager {
   }
 
   /**
-   * Full bootstrap — two-phase fetch.
+   * Full bootstrap — two-phase fetch. Only Instant models are ever shipped;
+   * Lazy / Partial / ExplicitlyRequested / Local / Ephemeral load on demand
+   * or via SSE.
    *
-   * Phase 1: Fetch critical models (everything NOT in deferredModels).
+   * Phase 1: critical Instant models (everything NOT in deferredModels).
    *          Write to IDB, hydrate into ObjectPool. UI can render.
    *
-   * Phase 2: Fetch deferred models (Comment, Reaction, Attachment, etc.)
+   * Phase 2: deferred Instant models (Comment, Reaction, Attachment, etc.)
    *          in the background after the engine is marked ready.
-   *          These are less critical for the initial render.
    *
-   * If deferredModels is not configured, everything is fetched in one request.
+   * If deferredModels is not configured, every Instant model is fetched in
+   * a single request.
    */
-  /**
-   * True when the model should be skipped from a bootstrap payload because the
-   * configured `onDemandFetcher` will fetch it later on first access. Returns
-   * false when no on-demand fetcher is configured (everything ships normally).
-   */
-  private isSkippedAtBootstrap(m: ModelMeta): boolean {
-    if (this.config.onDemandFetcher == null) {
-      return false;
-    }
-    return (
-      m.loadStrategy === LoadStrategy.Partial ||
-      m.loadStrategy === LoadStrategy.Lazy ||
-      m.loadStrategy === LoadStrategy.ExplicitlyRequested
-    );
-  }
-
   private async fullBootstrap() {
     const deferred = new Set(this.config.deferredModels ?? []);
-    const allMetas = ModelRegistry.allModels();
-    const isOnDemand = this.config.onDemandFetcher != null;
+    const instantModels = ModelRegistry.instantModelNames();
 
     if (deferred.size > 0) {
-      // Phase 1: critical models only
-      const criticalModels = allMetas
-        .filter((m) => !deferred.has(m.name) && !this.isSkippedAtBootstrap(m))
-        .map((m) => m.name);
+      // Phase 1: critical Instant models only
+      const criticalModels = instantModels.filter((name) => !deferred.has(name));
       this.setPhase(
         BootstrapPhase.Fetching,
         `phase 1: ${criticalModels.length} critical models`,
@@ -544,23 +526,17 @@ export class StoreManager {
 
       // Phase 2: deferred models — runs AFTER bootstrap() returns and the
       // engine is marked ready. The UI is already interactive at this point.
-      const deferredModels = allMetas
-        .filter((m) => deferred.has(m.name))
-        .map((m) => m.name);
+      const deferredModels = instantModels.filter((name) => deferred.has(name));
       if (deferredModels.length > 0) {
         this.fetchDeferredModels(deferredModels);
       }
     } else {
-      // Single-phase: fetch everything at once.
-      // When onDemandFetcher is configured, narrow to fetchable models so the
-      // server can omit Partial / Lazy / ExplicitlyRequested data.
+      // Single-phase: fetch every Instant model at once. Lazy / Partial /
+      // ExplicitlyRequested / Local / Ephemeral models are loaded on demand
+      // (or never) and don't belong in a bootstrap payload.
       this.setPhase(BootstrapPhase.Fetching, "full");
       const res = await this.config.bootstrapFetcher(BootstrapType.Full, {
-        onlyModels: isOnDemand
-          ? allMetas
-              .filter((m) => !this.isSkippedAtBootstrap(m))
-              .map((m) => m.name)
-          : undefined,
+        onlyModels: instantModels,
         currentMeta: this.database.currentMeta,
       });
 
@@ -999,8 +975,7 @@ export class StoreManager {
 
   /**
    * Scoped bootstrap-fetcher call: same fetcher used by full/partial bootstrap,
-   * scoped to a subset of groups via `syncGroups`. Also narrows `onlyModels` so
-   * on-demand-loaded models aren't shipped when an `onDemandFetcher` is wired.
+   * scoped to a subset of groups via `syncGroups` and to Instant models only.
    *
    * Returns `schemaMismatch: true` if the server reports a schema version that
    * doesn't match what's stored — in that case a full re-bootstrap has already
@@ -1010,16 +985,11 @@ export class StoreManager {
     groups: string[],
     dbMeta: DatabaseMeta,
   ): Promise<{ schemaMismatch: boolean }> {
-    const isOnDemand = this.config.onDemandFetcher != null;
     let res: BootstrapResponse;
     try {
       res = await this.config.bootstrapFetcher(BootstrapType.Full, {
         syncGroups: groups,
-        onlyModels: isOnDemand
-          ? ModelRegistry.allModels()
-              .filter((m) => !this.isSkippedAtBootstrap(m))
-              .map((m) => m.name)
-          : undefined,
+        onlyModels: ModelRegistry.instantModelNames(),
         currentMeta: dbMeta,
       });
     } catch (err) {
@@ -1052,15 +1022,21 @@ export class StoreManager {
   }
 
   /**
-   * Targeted full fetch for models added to the registry since the last
-   * connect. Runs after partial bootstrap so existing models keep their
-   * delta-only path; new models get a full snapshot.
+   * Targeted full fetch for Instant models added to the registry since the
+   * last connect. Runs after partial bootstrap so existing models keep their
+   * delta-only path; new Instant models get a full snapshot. Non-Instant
+   * additions are silently dropped — they load on demand or not at all.
    */
   private async fetchNewlyAddedModels(modelNames: string[]): Promise<void> {
+    const instant = new Set(ModelRegistry.instantModelNames());
+    const targets = modelNames.filter((name) => instant.has(name));
+    if (targets.length === 0) {
+      return;
+    }
     let res: BootstrapResponse;
     try {
       res = await this.config.bootstrapFetcher(BootstrapType.Full, {
-        onlyModels: modelNames,
+        onlyModels: targets,
         currentMeta: this.database.currentMeta,
       });
     } catch (err) {

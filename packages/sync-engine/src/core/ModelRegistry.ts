@@ -96,6 +96,19 @@ class ModelRegistryImpl {
     return [...this.models.values()];
   }
 
+  /** Names of every Instant-load-strategy model. Lazy / Partial /
+   * ExplicitlyRequested / Local / Ephemeral models are loaded on demand or
+   * via SSE — never via a full-bootstrap payload. */
+  instantModelNames(): string[] {
+    const out: string[] = [];
+    for (const meta of this.models.values()) {
+      if (meta.loadStrategy === LoadStrategy.Instant) {
+        out.push(meta.name);
+      }
+    }
+    return out;
+  }
+
   /**
    * A hash of all model names, versions, load strategies, and property metadata.
    * Used to detect when IndexedDB needs a migration.

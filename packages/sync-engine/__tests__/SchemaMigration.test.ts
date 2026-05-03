@@ -195,27 +195,27 @@ describe("Per-model schemaVersion migration", () => {
     expect(adapter.newlyAddedModels).toEqual([]);
   });
 
-  it("StoreManager runs a targeted full fetch for newly added models after partial bootstrap", async () => {
+  it("StoreManager runs a targeted full fetch for newly added Instant models after partial bootstrap", async () => {
     BaseModel.storeManager = null;
     const adapter = new MemoryAdapter();
     // Persist meta as if a previous session knew about every registered model
-    // EXCEPT TestActivity — only that one should trigger the targeted fetch.
+    // EXCEPT TestNote — only that one should trigger the targeted fetch.
     await adapter.saveMeta({
       lastSyncId: 100,
       subscribedSyncGroups: [],
       schemaHash: "any",
       dbVersion: 1,
       backendDatabaseVersion: 0,
-      modelSchemaVersions: versionsWithout("TestActivity"),
+      modelSchemaVersions: versionsWithout("TestNote"),
     });
 
     const calls: Array<{ type: string; onlyModels?: string[] }> = [];
     const bootstrapFetcher = vi.fn(async (type, options) => {
       calls.push({ type, onlyModels: options?.onlyModels });
-      // Partial returns no deltas; targeted full returns a TestActivity row.
+      // Partial returns no deltas; targeted full returns a TestNote row.
       const models: Record<string, Record<string, unknown>[]> =
-        options?.onlyModels?.includes("TestActivity")
-          ? { TestActivity: [{ id: "a1", taskId: "t1", text: "fetched" }] }
+        options?.onlyModels?.includes("TestNote")
+          ? { TestNote: [{ id: "n1", text: "fetched" }] }
           : {};
       return { lastSyncId: 100, subscribedSyncGroups: [], models };
     });
@@ -228,17 +228,54 @@ describe("Per-model schemaVersion migration", () => {
     try {
       await manager.bootstrap();
 
-      // Bootstrap: one Partial call + one targeted Full for TestActivity.
+      // Bootstrap: one Partial call + one targeted Full for TestNote.
       expect(calls).toEqual([
         expect.objectContaining({ type: BootstrapType.Partial }),
         expect.objectContaining({
           type: BootstrapType.Full,
-          onlyModels: ["TestActivity"],
+          onlyModels: ["TestNote"],
         }),
       ]);
       // The fetched row landed in IDB.
-      const row = await adapter.readModel("TestActivity", "a1");
+      const row = await adapter.readModel("TestNote", "n1");
       expect(row?.text).toBe("fetched");
+    } finally {
+      await manager.teardown();
+      BaseModel.storeManager = null;
+    }
+  });
+
+  it("StoreManager skips the targeted fetch for newly added non-Instant models", async () => {
+    BaseModel.storeManager = null;
+    const adapter = new MemoryAdapter();
+    // TestActivity is LoadStrategy.Partial — it loads on demand, not during
+    // bootstrap. Adding it to the registry should NOT trigger a Full fetch.
+    await adapter.saveMeta({
+      lastSyncId: 100,
+      subscribedSyncGroups: [],
+      schemaHash: "any",
+      dbVersion: 1,
+      backendDatabaseVersion: 0,
+      modelSchemaVersions: versionsWithout("TestActivity"),
+    });
+
+    const calls: Array<{ type: string }> = [];
+    const bootstrapFetcher = vi.fn(async (type) => {
+      calls.push({ type });
+      return { lastSyncId: 100, subscribedSyncGroups: [], models: {} };
+    });
+
+    const manager = new StoreManager({
+      workspaceId: crypto.randomUUID(),
+      bootstrapFetcher,
+      storageAdapter: adapter,
+    });
+    try {
+      await manager.bootstrap();
+      // Only the Partial call — no follow-up Full for TestActivity.
+      expect(calls).toEqual([
+        expect.objectContaining({ type: BootstrapType.Partial }),
+      ]);
     } finally {
       await manager.teardown();
       BaseModel.storeManager = null;

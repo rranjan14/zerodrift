@@ -1158,63 +1158,44 @@ describe("StoreManager", () => {
     });
   });
 
-  // ── fullBootstrap — onDemandFetcher narrows the fetch ─────────────────────
+  // ── fullBootstrap — Instant-only onlyModels ──────────────────────────────
   //
-  // When onDemandFetcher is configured the user has opted into progressive
-  // loading: Partial / Lazy / ExplicitlyRequested models load on access, not
-  // at bootstrap. Verify the engine narrows the bootstrap fetch accordingly
-  // so the server can omit those payloads.
+  // Bootstrap payloads only ever carry Instant models. Lazy / Partial /
+  // ExplicitlyRequested / Local / Ephemeral are loaded on demand or via SSE
+  // — never via a full-bootstrap payload — regardless of whether the adopter
+  // wired up an `onDemandFetcher`.
 
-  describe("fullBootstrap() — onDemandFetcher narrowing", () => {
-    it("excludes Partial/Lazy/ExplicitlyRequested from onlyModels when onDemandFetcher is set", async () => {
+  describe("fullBootstrap() — Instant-only onlyModels", () => {
+    it("restricts onlyModels to Instant strategies (excludes Partial/Lazy/Ephemeral/etc)", async () => {
       const bootstrapFetcher = vi
         .fn()
         .mockResolvedValue(emptyBootstrapResponse);
       const sm = new StoreManager({
         workspaceId: crypto.randomUUID(),
         bootstrapFetcher,
-        onDemandFetcher: vi.fn().mockResolvedValue([]),
       });
 
       await sm.bootstrap();
 
-      expect(bootstrapFetcher).toHaveBeenCalledTimes(1);
       const [, options] = bootstrapFetcher.mock.calls[0];
       expect(options.onlyModels).toBeDefined();
-      // TestActivity is the only Partial fixture; everything else is Instant/Ephemeral.
+      // TestActivity is Partial, TestMetric is Ephemeral — neither belongs.
       expect(options.onlyModels).not.toContain("TestActivity");
-      expect(options.onlyModels).toContain("TestTask");
+      expect(options.onlyModels).not.toContain("TestMetric");
+      expect(options.onlyModels).toContain("TestTask"); // Instant
 
       await sm.teardown();
     });
 
-    it("omits onlyModels entirely when onDemandFetcher is not set (single-phase)", async () => {
+    it("excludes deferred models from phase 1 (still Instant-only)", async () => {
       const bootstrapFetcher = vi
         .fn()
         .mockResolvedValue(emptyBootstrapResponse);
       const sm = new StoreManager({
         workspaceId: crypto.randomUUID(),
         bootstrapFetcher,
-      });
-
-      await sm.bootstrap();
-
-      const [, options] = bootstrapFetcher.mock.calls[0];
-      expect(options.onlyModels).toBeUndefined();
-
-      await sm.teardown();
-    });
-
-    it("excludes both deferred AND on-demand strategies from phase 1 when both are set", async () => {
-      const bootstrapFetcher = vi
-        .fn()
-        .mockResolvedValue(emptyBootstrapResponse);
-      const sm = new StoreManager({
-        workspaceId: crypto.randomUUID(),
-        bootstrapFetcher,
-        onDemandFetcher: vi.fn().mockResolvedValue([]),
         // deferredModels is the user's explicit phase-2 list — its members
-        // should still be excluded from phase 1 even if they're Instant.
+        // should be excluded from phase 1 even though they're Instant.
         deferredModels: ["TestNote"],
       });
 
