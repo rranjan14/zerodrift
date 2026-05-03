@@ -41,6 +41,14 @@ export {
   createBrowserSSEFactory,
 } from "./BaseSSEConnection";
 
+/** How many syncIds back to retain in the SyncAction store before pruning.
+ * Covers short offline gaps where a persisted pending tx asks "was my
+ * target deleted while I was away?" on next reconnect. */
+const SYNC_ACTION_PRUNE_MARGIN = 10_000;
+/** Run a prune sweep at most every Nth syncId of advancement — opening a
+ * readwrite transaction per packet is wasteful when nothing matches. */
+const SYNC_ACTION_PRUNE_STRIDE = 1_000;
+
 export interface SyncAction {
   modelName: string;
   modelId: string;
@@ -76,6 +84,10 @@ export class SyncConnection extends BaseSSEConnection {
   // Serializes packet processing to prevent interleaved async mutations.
   private packetQueue: DeltaPacket[] = [];
   private processing = false;
+  /** SyncId at which we last pruned `__syncActions`. Pruning fires every
+   * `SYNC_ACTION_PRUNE_STRIDE` syncIds rather than per-packet — opening a
+   * readwrite transaction is wasteful when nothing matches. */
+  private lastPrunedSyncId = 0;
 
   constructor(
     url: string,
@@ -201,6 +213,19 @@ export class SyncConnection extends BaseSSEConnection {
         }
       }
 
+      // Step 2b: persist sync-action headers for crash recovery — lets the
+      // queue (a) recognize an ack-syncId already arrived, (b) detect that
+      // a pending tx's target was deleted before flush. All actions in a
+      // packet share `packet.syncId`.
+      await this.database.recordSyncActions(
+        packet.syncActions.map((a) => ({
+          syncId: packet.syncId,
+          modelName: a.modelName,
+          modelId: a.modelId,
+          action: a.action,
+        })),
+      );
+
       // Step 3: apply to in-memory + rebase + cascade. Each action may need to
       // read from IDB to decide whether to hydrate a not-yet-pooled model
       // whose update brings it into a loaded scope, so this is async.
@@ -218,6 +243,22 @@ export class SyncConnection extends BaseSSEConnection {
 
     // Step 5: resolve transactions
     this.queue.resolveBySync(packet.syncId);
+
+    // Step 6: prune the SyncAction store. Recovery only needs recent
+    // history — anything well below `lastSyncId` is safe to drop. The
+    // 10k-syncId margin covers short offline gaps where a persisted-but-
+    // unsent tx checks the log for a delete of its target. We prune every
+    // ~1000 syncIds rather than per-packet to avoid opening a readwrite
+    // transaction when nothing matches.
+    if (
+      packet.syncId > SYNC_ACTION_PRUNE_MARGIN &&
+      packet.syncId - this.lastPrunedSyncId >= SYNC_ACTION_PRUNE_STRIDE
+    ) {
+      this.lastPrunedSyncId = packet.syncId;
+      void this.database.pruneSyncActionsBelow(
+        packet.syncId - SYNC_ACTION_PRUNE_MARGIN,
+      );
+    }
 
     this.onPacket?.(packet);
   }

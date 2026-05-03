@@ -17,12 +17,15 @@ import {
   type DatabaseMeta,
   type PartialIndexEntry,
   type StorageAdapter,
+  type SyncActionHeader,
 } from "./Database";
 
 export class MemoryAdapter implements StorageAdapter {
   private meta: DatabaseMeta | null = null;
   private models = new Map<string, Map<string, Record<string, unknown>>>();
   private txLog: { key: number; data: unknown }[] = [];
+  /** Persisted SSE sync action headers — keyed by syncId. */
+  private syncActions = new Map<number, SyncActionHeader>();
   private nextKey = 1;
   private connected = false;
   /** modelName → indexKey → value → firstSyncId at the time of fetch. */
@@ -205,8 +208,8 @@ export class MemoryAdapter implements StorageAdapter {
     return key;
   }
 
-  async getCachedTransactions(): Promise<unknown[]> {
-    return this.txLog.map((t) => t.data);
+  async getCachedTransactions(): Promise<{ idbKey: number; data: unknown }[]> {
+    return this.txLog.map((t) => ({ idbKey: t.key, data: t.data }));
   }
 
   async deleteCachedTransactions(keys: number[]): Promise<void> {
@@ -216,6 +219,44 @@ export class MemoryAdapter implements StorageAdapter {
 
   async clearCachedTransactions(): Promise<void> {
     this.txLog = [];
+  }
+
+  async updateCachedTransaction(idbKey: number, data: unknown): Promise<void> {
+    const i = this.txLog.findIndex((t) => t.key === idbKey);
+    if (i !== -1) {
+      this.txLog[i] = { key: idbKey, data };
+    }
+  }
+
+  async recordSyncActions(actions: SyncActionHeader[]): Promise<void> {
+    for (const a of actions) {
+      this.syncActions.set(a.syncId, a);
+    }
+  }
+
+  async hasSyncAction(syncId: number): Promise<boolean> {
+    return this.syncActions.has(syncId);
+  }
+
+  async findSyncActionsForModel(
+    modelName: string,
+    modelId: string,
+  ): Promise<{ syncId: number; action: string }[]> {
+    const out: { syncId: number; action: string }[] = [];
+    for (const a of this.syncActions.values()) {
+      if (a.modelName === modelName && a.modelId === modelId) {
+        out.push({ syncId: a.syncId, action: a.action });
+      }
+    }
+    return out;
+  }
+
+  async pruneSyncActionsBelow(belowSyncId: number): Promise<void> {
+    for (const id of this.syncActions.keys()) {
+      if (id < belowSyncId) {
+        this.syncActions.delete(id);
+      }
+    }
   }
 
   async recordPartialIndex(
@@ -268,6 +309,7 @@ export class MemoryAdapter implements StorageAdapter {
   async destroy(): Promise<void> {
     this.models.clear();
     this.txLog = [];
+    this.syncActions.clear();
     this.meta = null;
     this.nextKey = 1;
     this.connected = false;

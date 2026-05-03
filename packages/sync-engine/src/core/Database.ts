@@ -59,6 +59,17 @@ export interface PartialIndexEntry {
   firstSyncId: number;
 }
 
+/** A header for a server-confirmed sync action — persisted in the
+ * `__syncActions` store so crash-recovery can decide whether the awaited
+ * delta has already arrived (and whether a pending tx's target was
+ * deleted while the client was away). */
+export interface SyncActionHeader {
+  syncId: number;
+  modelName: string;
+  modelId: string;
+  action: "I" | "U" | "D" | "A" | "V" | "C";
+}
+
 /** Snapshot of every registered model's current `schemaVersion`. */
 export function currentModelVersions(): Record<string, number> {
   const out: Record<string, number> = {};
@@ -240,9 +251,33 @@ export interface StorageAdapter {
   ): Promise<void>;
   clearModelStore(modelName: string): Promise<void>;
   cacheTransaction(data: unknown): Promise<number | null>;
-  getCachedTransactions(): Promise<unknown[]>;
+  /**
+   * Update an existing cached transaction by `idbKey`. Used to flag a
+   * transaction as awaiting a specific syncId (server-ack'd, waiting for the
+   * matching SSE delta). On crash, recovery checks the SyncAction store to
+   * decide whether the awaited delta already arrived.
+   */
+  updateCachedTransaction(idbKey: number, data: unknown): Promise<void>;
+  /** Returns `(idbKey, data)` pairs so recovery can selectively delete
+   * resolved entries without clearing the whole store. */
+  getCachedTransactions(): Promise<{ idbKey: number; data: unknown }[]>;
   deleteCachedTransactions(keys: number[]): Promise<void>;
   clearCachedTransactions(): Promise<void>;
+  /**
+   * Persist headers for received SSE sync actions. Crash-recovery checks this
+   * store to (a) recognize transactions whose ack-syncId already arrived,
+   * (b) detect that a pending tx's target was deleted before the queue could
+   * flush. Headers only — `data` is not stored, since the model state is
+   * already durable in its own store.
+   */
+  recordSyncActions(actions: SyncActionHeader[]): Promise<void>;
+  hasSyncAction(syncId: number): Promise<boolean>;
+  findSyncActionsForModel(
+    modelName: string,
+    modelId: string,
+  ): Promise<{ syncId: number; action: string }[]>;
+  /** Drop sync actions older than `belowSyncId`. Called periodically to bound storage. */
+  pruneSyncActionsBelow(belowSyncId: number): Promise<void>;
   /**
    * Record that a `loadCollection(modelName, indexKey, value)` query has been
    * fetched in full as of `firstSyncId`. Survives reload — on the next
@@ -382,7 +417,7 @@ export class Database implements StorageAdapter {
       return;
     }
     const names = [...this.db.objectStoreNames].filter(
-      (name) => name !== "__transactions" && name !== "__partialIndexes",
+      (name) => !name.startsWith("__"),
     );
     if (names.length === 0) {
       return;
@@ -472,8 +507,10 @@ export class Database implements StorageAdapter {
   //   - Changed models → add/remove indexes
   // =========================================================================
 
-  /** Create all stores from scratch (first-time DB creation). */
-  private createAllStores(db: IDBDatabase) {
+  /** Create the engine's reserved stores (`__`-prefixed) if they don't yet
+   * exist. Called from both first-time creation and incremental migration —
+   * adding a new system store means one entry here, not two. */
+  private ensureSystemStores(db: IDBDatabase): void {
     if (!db.objectStoreNames.contains("__meta")) {
       db.createObjectStore("__meta");
     }
@@ -485,6 +522,18 @@ export class Database implements StorageAdapter {
         keyPath: ["modelName", "indexKey", "value"],
       });
     }
+    if (!db.objectStoreNames.contains("__syncActions")) {
+      const syncActions = db.createObjectStore("__syncActions", {
+        keyPath: ["syncId", "modelName", "modelId"],
+      });
+      syncActions.createIndex("byModel", ["modelName", "modelId"]);
+      syncActions.createIndex("bySyncId", "syncId");
+    }
+  }
+
+  /** Create all stores from scratch (first-time DB creation). */
+  private createAllStores(db: IDBDatabase) {
+    this.ensureSystemStores(db);
     for (const modelMeta of ModelRegistry.allModels()) {
       this.createModelStore(db, modelMeta.name);
     }
@@ -492,18 +541,7 @@ export class Database implements StorageAdapter {
 
   /** Run an incremental migration: add/remove/update stores. */
   private migrateSchema(db: IDBDatabase, upgradeTx: IDBTransaction) {
-    // Ensure system stores exist
-    if (!db.objectStoreNames.contains("__meta")) {
-      db.createObjectStore("__meta");
-    }
-    if (!db.objectStoreNames.contains("__transactions")) {
-      db.createObjectStore("__transactions", { autoIncrement: true });
-    }
-    if (!db.objectStoreNames.contains("__partialIndexes")) {
-      db.createObjectStore("__partialIndexes", {
-        keyPath: ["modelName", "indexKey", "value"],
-      });
-    }
+    this.ensureSystemStores(db);
 
     const registeredModels = new Set(
       ModelRegistry.allModels().map((m) => m.name),
@@ -839,11 +877,26 @@ export class Database implements StorageAdapter {
     });
   }
 
-  async getCachedTransactions(): Promise<unknown[]> {
+  async getCachedTransactions(): Promise<{ idbKey: number; data: unknown }[]> {
     if (this.db == null) {
       return [];
     }
-    return this.idbGetAll("__transactions");
+    return new Promise((resolve, reject) => {
+      const tx = this.db!.transaction("__transactions", "readonly");
+      const store = tx.objectStore("__transactions");
+      const out: { idbKey: number; data: unknown }[] = [];
+      const cursor = store.openCursor();
+      cursor.onsuccess = () => {
+        const c = cursor.result;
+        if (c == null) {
+          resolve(out);
+          return;
+        }
+        out.push({ idbKey: c.primaryKey as number, data: c.value });
+        c.continue();
+      };
+      cursor.onerror = () => reject(cursor.error);
+    });
   }
 
   async deleteCachedTransactions(idbKeys: number[]): Promise<void> {
@@ -865,6 +918,91 @@ export class Database implements StorageAdapter {
     const tx = this.db.transaction("__transactions", "readwrite");
     tx.objectStore("__transactions").clear();
     return this.waitForTransaction(tx);
+  }
+
+  async updateCachedTransaction(idbKey: number, data: unknown): Promise<void> {
+    if (this.db == null) {
+      return;
+    }
+    const tx = this.db.transaction("__transactions", "readwrite");
+    tx.objectStore("__transactions").put(data, idbKey);
+    return this.waitForTransaction(tx);
+  }
+
+  // =========================================================================
+  // SyncAction store — persisted change-log headers for crash recovery.
+  // =========================================================================
+
+  async recordSyncActions(actions: SyncActionHeader[]): Promise<void> {
+    if (this.db == null || actions.length === 0) {
+      return;
+    }
+    const tx = this.db.transaction("__syncActions", "readwrite");
+    const store = tx.objectStore("__syncActions");
+    for (const a of actions) {
+      store.put(a);
+    }
+    return this.waitForTransaction(tx);
+  }
+
+  async hasSyncAction(syncId: number): Promise<boolean> {
+    if (this.db == null) {
+      return false;
+    }
+    return new Promise((resolve, reject) => {
+      const r = this.db!.transaction("__syncActions", "readonly")
+        .objectStore("__syncActions")
+        .index("bySyncId")
+        .getKey(syncId);
+      r.onsuccess = () => resolve(r.result != null);
+      r.onerror = () => reject(r.error);
+    });
+  }
+
+  async findSyncActionsForModel(
+    modelName: string,
+    modelId: string,
+  ): Promise<{ syncId: number; action: string }[]> {
+    if (this.db == null) {
+      return [];
+    }
+    return new Promise((resolve, reject) => {
+      const r = this.db!.transaction("__syncActions", "readonly")
+        .objectStore("__syncActions")
+        .index("byModel")
+        .getAll([modelName, modelId]);
+      r.onsuccess = () => {
+        const rows = (r.result ?? []) as {
+          syncId: number;
+          action: string;
+        }[];
+        resolve(rows.map((row) => ({ syncId: row.syncId, action: row.action })));
+      };
+      r.onerror = () => reject(r.error);
+    });
+  }
+
+  async pruneSyncActionsBelow(belowSyncId: number): Promise<void> {
+    if (this.db == null) {
+      return;
+    }
+    return new Promise((resolve, reject) => {
+      const tx = this.db!.transaction("__syncActions", "readwrite");
+      const store = tx.objectStore("__syncActions");
+      const cursor = store
+        .index("bySyncId")
+        .openCursor(IDBKeyRange.upperBound(belowSyncId, true));
+      cursor.onsuccess = () => {
+        const c = cursor.result;
+        if (c == null) {
+          return;
+        }
+        c.delete();
+        c.continue();
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
   }
 
   // =========================================================================

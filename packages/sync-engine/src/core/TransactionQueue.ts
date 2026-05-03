@@ -45,6 +45,10 @@ interface CachedTransactionRecord {
   changes?: Record<string, PropertyChange>;
   data?: Record<string, unknown>;
   snapshot?: Record<string, unknown>;
+  /** Set when the server ack'd the tx; recovery checks the SyncAction store
+   * to decide whether the awaited delta already arrived. Absent → tx never
+   * left the pending queue and should be resent on restart. */
+  syncIdNeededForCompletion?: number;
 }
 
 // An undo entry: either one transaction or a group
@@ -240,10 +244,21 @@ export class TransactionQueue {
         .map((tx) => tx.idbKey)
         .filter((k): k is number => k != null);
       if (response.success) {
-        await this.database.deleteCachedTransactions(batchKeys);
+        // Don't delete cached records on ACK — flag them as awaiting the
+        // server's syncId. If the client crashes here, recovery checks the
+        // SyncAction store; if the matching delta already arrived, the tx
+        // is dropped without resending. The cached record is removed on
+        // resolveBySync (when the matching SSE delta hits this tab).
         for (const tx of batch) {
           tx.markCompleted(response.lastSyncId);
           this.awaitingSync.push(tx);
+          if (tx.idbKey != null) {
+            const cached: CachedTransactionRecord = {
+              ...(tx.serialize() as unknown as CachedTransactionRecord),
+              syncIdNeededForCompletion: response.lastSyncId,
+            };
+            await this.database.updateCachedTransaction(tx.idbKey, cached);
+          }
         }
       } else {
         // Server rejected — revert first, then remove from IDB so failed
@@ -287,6 +302,16 @@ export class TransactionQueue {
     }
 
     this.awaitingSync = remaining;
+
+    // Drop the resolved txs' cached records — they're no longer needed for
+    // crash recovery (the awaited delta is now persisted in __syncActions).
+    const idbKeys = resolved
+      .map((tx) => tx.idbKey)
+      .filter((k): k is number => k != null);
+    if (idbKeys.length > 0) {
+      void this.database.deleteCachedTransactions(idbKeys);
+    }
+
     return resolved;
   }
 
@@ -442,18 +467,9 @@ export class TransactionQueue {
       return 0;
     }
 
-    // Clear before re-enqueueing. Reconstructed transactions don't carry their
-    // original idbKey, so flush() would see null keys and never delete them —
-    // causing the same transactions to replay on every subsequent restart.
-    // Clearing upfront means flush() has nothing to clean up, which is correct.
-    await this.database.clearCachedTransactions();
-
     // Build a signature set for transactions already in-flight, pending, or awaiting sync.
     // If a transaction is currently being sent (executing) or already queued (pending),
     // re-enqueueing from IDB would send a duplicate to the server.
-    // For INSERT this causes a conflict error → success:false → revertOne() removes
-    // the model from the pool (the "create after sleep doesn't show up" bug).
-    // UPDATE and DELETE are idempotent on the server, but skipping is still correct.
     const inFlight = new Set<string>();
     for (const tx of [
       ...this.pending,
@@ -463,37 +479,121 @@ export class TransactionQueue {
       inFlight.add(`${tx.action}:${tx.modelName}:${tx.modelId}`);
     }
 
+    // Walk the cached records once. For each:
+    //   - syncIdNeededForCompletion present + matching SSE delta already
+    //     persisted → drop (server ack'd, delta arrived).
+    //   - syncIdNeededForCompletion present + no matching delta yet →
+    //     restore to awaitingSync (do NOT resend; just wait for the delta).
+    //   - No syncId set → it's still pending. If the target model has been
+    //     deleted/archived since the tx was queued, drop it and emit a
+    //     transactionDiscarded error. Otherwise rebuild and re-enqueue.
+    const dropKeys: number[] = [];
     let count = 0;
-    for (const d of cached as CachedTransactionRecord[]) {
-      if (inFlight.has(`${d.action}:${d.modelName}:${d.modelId}`)) {
-        continue; // already being sent — skip to avoid duplicate
+    for (const entry of cached) {
+      const d = entry.data as CachedTransactionRecord;
+      const idbKey = entry.idbKey;
+      const inFlightKey = `${d.action}:${d.modelName}:${d.modelId}`;
+
+      if (d.syncIdNeededForCompletion != null) {
+        if (await this.database.hasSyncAction(d.syncIdNeededForCompletion)) {
+          dropKeys.push(idbKey);
+          continue;
+        }
+        if (inFlight.has(inFlightKey)) {
+          dropKeys.push(idbKey);
+          continue;
+        }
+        const tx = this.rebuildTransaction(d);
+        if (tx == null) {
+          dropKeys.push(idbKey);
+          continue;
+        }
+        tx.idbKey = idbKey;
+        tx.markCompleted(d.syncIdNeededForCompletion);
+        this.awaitingSync.push(tx);
+        continue;
       }
 
-      let tx: BaseTransaction;
-      switch (d.action) {
-        case "U":
-          tx = new UpdateTransaction(d.modelId, d.modelName, d.changes!);
-          break;
-        case "I":
-          tx = new CreateTransaction(d.modelId, d.modelName, d.data!);
-          break;
-        case "D":
-          tx = new DeleteTransaction(d.modelId, d.modelName, d.snapshot!);
-          break;
-        case "A":
-          tx = new ArchiveTransaction(d.modelId, d.modelName, d.snapshot!);
-          break;
-        default:
-          continue;
+      if (inFlight.has(inFlightKey)) {
+        dropKeys.push(idbKey);
+        continue;
       }
-      tx.batchId = d.batchId ?? null;
+
+      // Pending tx — check whether the target was deleted/archived in our absence.
+      if (d.action === "U" || d.action === "D" || d.action === "A") {
+        const actions = await this.database.findSyncActionsForModel(
+          d.modelName,
+          d.modelId,
+        );
+        if (actions.some((a) => a.action === "D" || a.action === "A")) {
+          dropKeys.push(idbKey);
+          this.reportError?.(
+            new Error(
+              `Discarded persisted ${d.action} for ${d.modelName} ${d.modelId}: target was deleted`,
+            ),
+            {
+              kind: "transactionDiscarded",
+              modelName: d.modelName,
+              modelId: d.modelId,
+              action: d.action,
+              reason: "target-deleted",
+            },
+          );
+          continue;
+        }
+      }
+
+      const tx = this.rebuildTransaction(d);
+      if (tx == null) {
+        dropKeys.push(idbKey);
+        continue;
+      }
+      tx.idbKey = idbKey;
       this.pending.push(tx);
       count++;
+    }
+
+    if (dropKeys.length > 0) {
+      await this.database.deleteCachedTransactions(dropKeys);
     }
     if (count > 0) {
       this.scheduleFlush();
     }
     return count;
+  }
+
+  private rebuildTransaction(d: CachedTransactionRecord): BaseTransaction | null {
+    let tx: BaseTransaction;
+    switch (d.action) {
+      case "U":
+        if (d.changes == null) {
+          return null;
+        }
+        tx = new UpdateTransaction(d.modelId, d.modelName, d.changes);
+        break;
+      case "I":
+        if (d.data == null) {
+          return null;
+        }
+        tx = new CreateTransaction(d.modelId, d.modelName, d.data);
+        break;
+      case "D":
+        if (d.snapshot == null) {
+          return null;
+        }
+        tx = new DeleteTransaction(d.modelId, d.modelName, d.snapshot);
+        break;
+      case "A":
+        if (d.snapshot == null) {
+          return null;
+        }
+        tx = new ArchiveTransaction(d.modelId, d.modelName, d.snapshot);
+        break;
+      default:
+        return null;
+    }
+    tx.batchId = d.batchId ?? null;
+    return tx;
   }
 
   destroy() {

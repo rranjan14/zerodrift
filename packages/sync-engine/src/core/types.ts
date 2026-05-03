@@ -187,6 +187,13 @@ export type EngineErrorContext =
   | { kind: "lazyBackRefLoad"; modelName: string; parentId: string }
   | { kind: "deferredBootstrap"; modelNames: string[] }
   | { kind: "newModelsBootstrap"; modelNames: string[] }
+  | {
+      kind: "transactionDiscarded";
+      modelName: string;
+      modelId: string;
+      action: string;
+      reason: "target-deleted";
+    }
   | { kind: "syncGroupFetch"; groups: string[] }
   | { kind: "ssePacketParse"; url: string; raw: string }
   | { kind: "sseConstruction"; url: string }

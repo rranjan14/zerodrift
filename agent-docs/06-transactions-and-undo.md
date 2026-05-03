@@ -153,13 +153,24 @@ Every `enqueue()` call writes the serialized transaction to IDB's `__transaction
 tx.idbKey = await db.cacheTransaction(tx.serialize());
 ```
 
-If the app closes before flushing (tab crash, network drop), the transaction is durable. On next startup, `TransactionQueue` re-reads `__transactions` from IDB and re-queues any non-Completed transactions. They flush to the server once connectivity is restored.
+If the app closes before flushing (tab crash, network drop), the transaction is durable. On next startup, `TransactionQueue.resendCached` re-reads `__transactions` from IDB and decides what to do with each entry — see "Crash recovery" below.
 
-When a transaction completes, it's removed from `__transactions`:
+The cache record is **kept** through the `CompletedButUnsynced` window: when the server ACKs, instead of deleting the record, the queue updates it to set `syncIdNeededForCompletion`. The record is only removed once the matching SSE delta arrives and `resolveBySync` resolves the transaction. This way a crash between server-ACK and SSE-delta is recoverable.
 
-```typescript
-await db.removeTransaction(tx.idbKey);
-```
+## Crash recovery: the SyncAction store
+
+The engine persists every server-confirmed sync action header into a separate IDB store (`__syncActions`) — one row per `(syncId, modelName, modelId, action)` tuple. This is a **change log**, not a snapshot, and it's what makes `resendCached` correct across crashes:
+
+| Cached record's state | Recovery action |
+|---|---|
+| Has `syncIdNeededForCompletion` AND `__syncActions` contains that syncId | Drop. The server ack'd and the matching delta already landed. |
+| Has `syncIdNeededForCompletion` but no matching syncId yet | Restore to `awaitingSync` in memory; do NOT resend. Wait for the next catchup delta. |
+| No `syncIdNeededForCompletion`; target's `__syncActions` history shows a `D` or `A` while we were away | Drop. Emit a `transactionDiscarded` error (`reason: "target-deleted"`) so adopters can surface "your edit was discarded because the model was deleted". |
+| No `syncIdNeededForCompletion`; target alive | Re-enqueue as `Pending` and flush. |
+
+The store is pruned periodically: every ~1000 syncIds of advancement, anything older than `lastSyncId − 10000` is dropped (`SYNC_ACTION_PRUNE_MARGIN`). The 10k margin covers short offline gaps where a persisted-but-unsent tx checks the log for a delete of its target.
+
+Adapter contract: `recordSyncActions`, `hasSyncAction`, `findSyncActionsForModel`, `pruneSyncActionsBelow`, plus `updateCachedTransaction` (to flag a cached record as awaiting-sync without removing it). All on the public `StorageAdapter` interface so any backend (SQLite, Redis, etc.) supports the same recovery semantics.
 
 ## Conflict Handling (Rebase)
 

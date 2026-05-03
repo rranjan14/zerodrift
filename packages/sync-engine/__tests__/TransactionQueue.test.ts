@@ -13,6 +13,14 @@ import { TestTask } from "./fixtures";
 const flush = (queue: TransactionQueue) =>
   (queue as unknown as { flush(): Promise<void> }).flush();
 
+/** Find a cached-transaction record by `modelId` and return its `data`. */
+const findByModelId = (
+  cached: { idbKey: number; data: unknown }[],
+  modelId: string,
+) =>
+  cached.find((c) => (c.data as { modelId: string }).modelId === modelId)
+    ?.data as Record<string, unknown> | undefined;
+
 let db: Database;
 let pool: ObjectPool;
 let queue: TransactionQueue;
@@ -52,7 +60,7 @@ describe("TransactionQueue", () => {
       });
       const cached = await db.getCachedTransactions();
       expect(cached).toHaveLength(1);
-      expect((cached[0] as { action: string }).action).toBe("U");
+      expect(((cached[0].data as { action: string }).action)).toBe("U");
     });
 
     it("standalone enqueue pushes a single entry onto the undo stack", async () => {
@@ -176,10 +184,10 @@ describe("TransactionQueue", () => {
       expect(queue.executingCount).toBe(0);
     });
 
-    it("clears IDB cache on successful flush", async () => {
+    it("flags IDB cache with awaited syncId on successful flush", async () => {
       const sender = vi
         .fn()
-        .mockResolvedValue({ success: true, lastSyncId: 1 });
+        .mockResolvedValue({ success: true, lastSyncId: 42 });
       queue.setSender(sender);
 
       await queue.enqueueUpdate("t1", "TestTask", {
@@ -187,8 +195,22 @@ describe("TransactionQueue", () => {
       });
       await flush(queue);
 
+      // Cache entry survives until resolveBySync drops it — its
+      // `syncIdNeededForCompletion` is what crash-recovery uses to decide
+      // whether the matching SSE delta has already arrived.
       const cached = await db.getCachedTransactions();
-      expect(cached).toHaveLength(0);
+      expect(cached).toHaveLength(1);
+      expect(
+        (cached[0].data as { syncIdNeededForCompletion: number })
+          .syncIdNeededForCompletion,
+      ).toBe(42);
+
+      // Once the matching delta is announced, the cache entry goes away.
+      queue.resolveBySync(42);
+      // updateCachedTransaction / deleteCachedTransactions are awaited inside
+      // the queue; one microtask is enough for the deletion to land.
+      await Promise.resolve();
+      expect(await db.getCachedTransactions()).toHaveLength(0);
     });
 
     it("reverts the model and marks Failed when server rejects", async () => {
@@ -250,10 +272,14 @@ describe("TransactionQueue", () => {
       resolveSender({ success: true, lastSyncId: 1 });
       await flushPromise;
 
-      // t1's IDB entry should be gone; t2's should still be there
+      // Both entries are still present: t1's is now flagged
+      // syncIdNeededForCompletion=1; t2's is plain pending.
       const cached = await db.getCachedTransactions();
-      expect(cached).toHaveLength(1);
-      expect((cached[0] as { modelId: string }).modelId).toBe("t2");
+      expect(cached).toHaveLength(2);
+      expect(findByModelId(cached, "t1")?.syncIdNeededForCompletion).toBe(1);
+      expect(
+        findByModelId(cached, "t2")?.syncIdNeededForCompletion,
+      ).toBeUndefined();
     });
 
     it("does not wipe IDB entries for transactions enqueued during an in-flight flush (failure)", async () => {
@@ -286,7 +312,7 @@ describe("TransactionQueue", () => {
       // t1's IDB entry should be gone; t2's should still be there
       const cached = await db.getCachedTransactions();
       expect(cached).toHaveLength(1);
-      expect((cached[0] as { modelId: string }).modelId).toBe("t2");
+      expect(((cached[0].data as { modelId: string }).modelId)).toBe("t2");
     });
 
     it("does not call sender when there are no pending transactions", async () => {

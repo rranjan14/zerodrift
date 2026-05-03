@@ -487,7 +487,7 @@ describe("MemoryAdapter as storageAdapter", () => {
     await adapter.deleteCachedTransactions([k1 as number]);
     const remaining = await adapter.getCachedTransactions();
     expect(remaining).toHaveLength(1);
-    expect((remaining[0] as { modelId: string }).modelId).toBe("y");
+    expect((remaining[0].data as { modelId: string }).modelId).toBe("y");
 
     await adapter.deleteCachedTransactions([k2 as number]);
     expect(await adapter.getCachedTransactions()).toHaveLength(0);

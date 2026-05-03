@@ -17,12 +17,14 @@ Each workspace gets its own IndexedDB database named `sync_{workspaceId}`. Insid
 
 ```
 sync_workspace-123/
-  ├── __meta          → DatabaseMeta record (lastSyncId, schemaHash, subscribedSyncGroups)
-  ├── __transactions  → Queued user edits (offline resilience)
-  ├── Issue           → All cached Issue records (keyed by id)
-  ├── Team            → All cached Team records
-  ├── User            → All cached User records
-  └── DocumentContent → All cached DocumentContent records
+  ├── __meta            → DatabaseMeta record (lastSyncId, schemaHash, subscribedSyncGroups)
+  ├── __transactions    → Queued user edits + ack'd-awaiting-sync records (offline + crash resilience)
+  ├── __partialIndexes  → loadCollection coverage with firstSyncId per (model, indexKey, value)
+  ├── __syncActions     → Server-confirmed sync action headers (change log) for crash recovery
+  ├── Issue             → All cached Issue records (keyed by id)
+  ├── Team              → All cached Team records
+  ├── User              → All cached User records
+  └── DocumentContent   → All cached DocumentContent records
 ```
 
 One object store per model type. Records are stored as plain JSON with `id` as the key path.
