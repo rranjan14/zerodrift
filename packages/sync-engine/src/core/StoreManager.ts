@@ -1286,7 +1286,7 @@ export class StoreManager {
     return results;
   }
 
-  private isCollectionLoaded(
+  isCollectionLoaded(
     modelName: string,
     indexKey: string,
     value: string,

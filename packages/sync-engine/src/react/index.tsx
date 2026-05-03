@@ -1,10 +1,10 @@
 /**
  * React integration for the Sync Engine.
  *
- * Key behavior: when a delta packet arrives from another client and adds,
- * updates, or removes a model, any component using useModel/useModels for
- * that model type automatically re-renders. This works because the hooks
- * subscribe to ObjectPool change notifications via useSyncExternalStore.
+ * Hooks subscribe to ObjectPool change notifications via useSyncExternalStore,
+ * so a delta packet that adds, updates, or removes a model automatically
+ * re-renders any component reading it through `useModel` / `useModels` /
+ * `useIndexedCollection` (or directly via `useCollection` / `useBackRef`).
  */
 
 import React, {
@@ -13,12 +13,16 @@ import React, {
   useState,
   useEffect,
   useCallback,
+  useMemo,
   useRef,
   useSyncExternalStore,
+  useLayoutEffect,
 } from "react";
 import { StoreManager, type StoreManagerConfig } from "../core/StoreManager";
 import { BootstrapPhase } from "../core/types";
 import { LazyCollectionBase, BackRef } from "../core/LazyCollection";
+import { readFk } from "../core/ObjectPool";
+import type { BaseModel } from "../core/BaseModel";
 
 // ---------------------------------------------------------------------------
 // Context
@@ -129,251 +133,192 @@ export function useBootstrapStatus(): SyncStatus {
   return useSyncEngine().status;
 }
 
-// ---------------------------------------------------------------------------
-// useModels — reactive list of all instances of a model type
-//
-// Re-renders when:
-//   - A delta packet adds a new instance of this type (another client creates)
-//   - A delta packet removes an instance (another client deletes)
-//   - A delta packet updates an instance (handled by MobX on the model itself)
-//
-// Uses useSyncExternalStore to subscribe to ObjectPool change events.
-// ---------------------------------------------------------------------------
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function useModels<T = any>(modelName: string): T[] {
-  const { sm, status } = useSyncEngine();
-  const pool = sm.objectPool;
-
-  // Subscribe to ObjectPool change notifications for this model type.
-  // When pool.put() or pool.remove() is called for this model (e.g. by
-  // SyncConnection processing a delta packet), the listener fires
-  // and React re-renders this component.
+/** Subscribe to a model type's pool changes and read a snapshot synchronously.
+ *
+ * `getSnapshot` is intentionally NOT stabilized — useSyncExternalStore calls
+ * it during render and compares the returned value, not the function identity.
+ * Stabilizing via useStableCallback would defer ref-updates to useLayoutEffect
+ * and silently return stale values on the render where its inputs change. */
+function usePoolSnapshot<R>(modelName: string, getSnapshot: () => R): R {
+  const { sm } = useSyncEngine();
   const subscribe = useCallback(
-    (onStoreChange: () => void) => pool.subscribe(modelName, onStoreChange),
-    [pool, modelName],
+    (onStoreChange: () => void) =>
+      sm.objectPool.subscribe(modelName, onStoreChange),
+    [sm, modelName],
   );
-
-  // Read current data from the pool.
-  // useSyncExternalStore calls this on subscribe and after every notification.
-  const getSnapshot = useCallback(
-    () => pool.getAll(modelName),
-    [pool, modelName],
-  );
-
-  const models = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-
-  if (status.phase !== BootstrapPhase.Ready) {
-    return [];
-  }
-  return models as T[];
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
 // ---------------------------------------------------------------------------
-// useModel — reactive single model by ID
-//
-// Re-renders when the pool changes for this model type (including when
-// this specific model is updated/deleted by a delta packet).
+// useLoader — internal helper carrying the loading/error/reload + race-guard
+// shape shared by every pool-aware hook below. Auto-fires on mount and on
+// `triggerKey` change when `shouldAutoFire` returns true; `reload()` always
+// fires regardless of the gate.
 // ---------------------------------------------------------------------------
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function useModel<T = any>(
+function useLoader(
+  load: () => Promise<unknown>,
+  enabled: boolean,
+  triggerKey: string,
+  shouldAutoFire: () => boolean,
+): {
+  isLoading: boolean;
+  error: Error | null;
+  reload: () => Promise<void>;
+} {
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+  const gen = useRef(0);
+  const stableLoad = useStableCallback(load);
+  const stableShouldAutoFire = useStableCallback(shouldAutoFire);
+
+  const reload = useCallback(async () => {
+    if (!enabled) {
+      return;
+    }
+    const g = ++gen.current;
+    setIsLoading(true);
+    setError(null);
+    try {
+      await stableLoad();
+      if (g === gen.current) {
+        setIsLoading(false);
+      }
+    } catch (e) {
+      if (g === gen.current) {
+        setError(e as Error);
+        setIsLoading(false);
+      }
+    }
+  }, [enabled, triggerKey, stableLoad]);
+
+  useEffect(() => {
+    if (enabled && stableShouldAutoFire()) {
+      void reload();
+    }
+  }, [reload, enabled, triggerKey, stableShouldAutoFire]);
+
+  return { isLoading, error, reload };
+}
+
+/** Reactive single model by id. Pool-first sync read; async backfill on miss. */
+export function useModel<T extends BaseModel = BaseModel>(
   modelName: string,
   id: string | null | undefined,
-): T | null {
+): {
+  item: T | null;
+  isLoading: boolean;
+  error: Error | null;
+  reload: () => Promise<void>;
+} {
   const { sm, status } = useSyncEngine();
   const pool = sm.objectPool;
+  const ready = status.phase === BootstrapPhase.Ready;
 
-  const subscribe = useCallback(
-    (onStoreChange: () => void) => pool.subscribe(modelName, onStoreChange),
-    [pool, modelName],
+  const item = usePoolSnapshot(modelName, () =>
+    id != null ? (pool.getById(modelName, id) ?? null) : null,
   );
 
-  const getSnapshot = useCallback(
-    () => (id != null ? (pool.getById(modelName, id) ?? null) : null),
-    [pool, modelName, id],
+  const { isLoading, error, reload } = useLoader(
+    () => sm.loadOne(modelName, id!),
+    ready && id != null,
+    `${modelName}:${id ?? ""}`,
+    // Skip the load when the pool already has the entry — instant models render
+    // with isLoading: false from frame zero.
+    () => id != null && pool.getById(modelName, id) == null,
   );
 
-  const model = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-
-  if (status.phase !== BootstrapPhase.Ready) {
-    return null;
-  }
-  return model as T | null;
+  return {
+    item: ready ? (item as T | null) : null,
+    isLoading,
+    error,
+    reload,
+  };
 }
 
-// ---------------------------------------------------------------------------
-// useLazyCollection — load a related collection with loading state
-//
-// For querying by foreign key: "all Issues where teamId === X".
-// Checks ObjectPool first (instant), falls back to IndexedDB.
-// Also subscribes to pool changes so new delta-packet arrivals show up.
-// ---------------------------------------------------------------------------
+/** Reactive list of models of a type, optionally filtered to a specific id set.
+ * Without `ids`: every instance in the pool. With `ids`: just those, in the
+ * order given, with async backfill for any missing from the pool. The ids
+ * array is compared by content so inline literals don't cause re-fetches. */
+export function useModels<T extends BaseModel = BaseModel>(
+  modelName: string,
+  ids?: string[] | null,
+): {
+  items: T[];
+  isLoading: boolean;
+  error: Error | null;
+  reload: () => Promise<void>;
+} {
+  const { sm, status } = useSyncEngine();
+  const pool = sm.objectPool;
+  const ready = status.phase === BootstrapPhase.Ready;
+  const idsKey = ids?.join(",") ?? "";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function useLazyCollection<T = any>(
+  const all = usePoolSnapshot(modelName, () => pool.getAll(modelName));
+
+  const items = useMemo(() => {
+    if (ids == null) {
+      return all;
+    }
+    const byId = new Map(all.map((m) => [m.id, m]));
+    return ids
+      .map((id) => byId.get(id))
+      .filter((m): m is (typeof all)[number] => m != null);
+  }, [all, idsKey]);
+
+  const { isLoading, error, reload } = useLoader(
+    () => sm.loadByIds(modelName, ids ?? []),
+    ready && ids != null && ids.length > 0,
+    `${modelName}:${idsKey}`,
+    () => ids != null && ids.some((id) => pool.getById(modelName, id) == null),
+  );
+
+  return {
+    items: ready ? (items as T[]) : [],
+    isLoading,
+    error,
+    reload,
+  };
+}
+
+/** Reactive list of models matching a foreign-key index, e.g. `teamId === id`.
+ * Fires `loadCollection` on first use; subsequent calls hit the cache. */
+export function useIndexedCollection<T extends BaseModel = BaseModel>(
   modelName: string,
   indexKey: string,
   value: string | null | undefined,
-) {
+): {
+  items: T[];
+  isLoading: boolean;
+  error: Error | null;
+  reload: () => Promise<void>;
+} {
   const { sm, status } = useSyncEngine();
-  const [items, setItems] = useState<T[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<Error | null>(null);
-  const gen = useRef(0);
+  const ready = status.phase === BootstrapPhase.Ready;
+  const hasValue = value != null && value !== "";
 
-  const doLoad = useCallback(async () => {
-    if (value == null || status.phase !== BootstrapPhase.Ready) {
-      return;
+  const all = usePoolSnapshot(modelName, () => sm.objectPool.getAll(modelName));
+
+  const items = useMemo(() => {
+    if (!hasValue) {
+      return [];
     }
-    const g = ++gen.current;
-    setIsLoading(true);
-    setError(null);
-    try {
-      const result = await sm.loadCollection(modelName, indexKey, value);
-      if (g === gen.current) {
-        setItems(result as T[]);
-        setIsLoading(false);
-      }
-    } catch (e) {
-      if (g === gen.current) {
-        setError(e as Error);
-        setIsLoading(false);
-      }
-    }
-  }, [sm, modelName, indexKey, value, status.phase]);
+    return all.filter((m) => readFk(m, indexKey) === value);
+  }, [all, indexKey, value, hasValue]);
 
-  // Initial load
-  useEffect(() => {
-    doLoad();
-  }, [doLoad]);
+  const { isLoading, error, reload } = useLoader(
+    () => sm.loadCollection(modelName, indexKey, value!),
+    ready && hasValue,
+    `${modelName}:${indexKey}:${value ?? ""}`,
+    () => hasValue && !sm.isCollectionLoaded(modelName, indexKey, value!),
+  );
 
-  // Re-load when pool changes (e.g. delta packet adds a new Issue to this team)
-  useEffect(() => {
-    if (value == null || status.phase !== BootstrapPhase.Ready) {
-      return;
-    }
-    return sm.objectPool.subscribe(modelName, doLoad);
-  }, [sm, modelName, value, status.phase, doLoad]);
-
-  return { items, isLoading, error, reload: doLoad };
-}
-
-// ---------------------------------------------------------------------------
-// useLazyIds — load a specific set of models by ID with loading state
-//
-// The reactive complement to useModel for multiple IDs:
-//
-//   const { items, isLoading } = useLazyIds("Issue", ["id-1", "id-2"]);
-//
-// Calls loadByIds on mount (and when IDs change). Re-renders when the pool
-// changes for this model type (e.g. a delta packet updates one of the items).
-// The ids array is compared by value, so inline arrays won't cause re-fetches.
-// ---------------------------------------------------------------------------
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function useLazyIds<T = any>(
-  modelName: string,
-  ids: string[] | null | undefined,
-) {
-  const { sm, status } = useSyncEngine();
-  const [items, setItems] = useState<T[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<Error | null>(null);
-  const gen = useRef(0);
-
-  // Stable key so inline array literals don't cause infinite re-fetches.
-  const idsKey = ids?.join(",") ?? "";
-
-  const doLoad = useCallback(async () => {
-    if (
-      ids == null ||
-      ids.length === 0 ||
-      status.phase !== BootstrapPhase.Ready
-    ) {
-      return;
-    }
-    const g = ++gen.current;
-    setIsLoading(true);
-    setError(null);
-    try {
-      const result = await sm.loadByIds(modelName, ids);
-      if (g === gen.current) {
-        setItems(result as T[]);
-        setIsLoading(false);
-      }
-    } catch (e) {
-      if (g === gen.current) {
-        setError(e as Error);
-        setIsLoading(false);
-      }
-    }
-  }, [sm, modelName, idsKey, status.phase]);
-
-  useEffect(() => {
-    doLoad();
-  }, [doLoad]);
-
-  // Re-render when pool changes (e.g. delta packet updates one of the items)
-  useEffect(() => {
-    if (idsKey === "" || status.phase !== BootstrapPhase.Ready) {
-      return;
-    }
-    return sm.objectPool.subscribe(modelName, doLoad);
-  }, [sm, modelName, idsKey, status.phase, doLoad]);
-
-  return { items, isLoading, error, reload: doLoad };
-}
-
-// ---------------------------------------------------------------------------
-// useLazyRef — load a single partial/lazy model by ID
-// ---------------------------------------------------------------------------
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function useLazyRef<T = any>(
-  modelName: string,
-  id: string | null | undefined,
-) {
-  const { sm, status } = useSyncEngine();
-  const [value, setValue] = useState<T | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<Error | null>(null);
-  const gen = useRef(0);
-
-  const doLoad = useCallback(async () => {
-    if (id == null || status.phase !== BootstrapPhase.Ready) {
-      return;
-    }
-    const g = ++gen.current;
-    setIsLoading(true);
-    setError(null);
-    try {
-      const result = await sm.loadOne(modelName, id);
-      if (g === gen.current) {
-        setValue(result as T | null);
-        setIsLoading(false);
-      }
-    } catch (e) {
-      if (g === gen.current) {
-        setError(e as Error);
-        setIsLoading(false);
-      }
-    }
-  }, [sm, modelName, id, status.phase]);
-
-  useEffect(() => {
-    doLoad();
-  }, [doLoad]);
-
-  // Re-load on pool changes (e.g. delta packet updates this model)
-  useEffect(() => {
-    if (id == null || status.phase !== BootstrapPhase.Ready) {
-      return;
-    }
-    return sm.objectPool.subscribe(modelName, doLoad);
-  }, [sm, modelName, id, status.phase, doLoad]);
-
-  return { value, isLoading, error, reload: doLoad };
+  return {
+    items: ready ? (items as T[]) : [],
+    isLoading,
+    error,
+    reload,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -433,9 +378,8 @@ export function useUndoRedo() {
 // subscribe() method for proper reactivity.
 // ---------------------------------------------------------------------------
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function useCollection<T = any>(
-  collection: LazyCollectionBase | null | undefined,
+export function useCollection<T extends BaseModel = BaseModel>(
+  collection: LazyCollectionBase<T> | null | undefined,
 ) {
   const [tick, forceRender] = useState(0);
 
@@ -480,8 +424,9 @@ export function useCollection<T = any>(
 //   const { value: favorite, isLoading } = useBackRef(issue?.favorite);
 // ---------------------------------------------------------------------------
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function useBackRef<T = any>(backRef: BackRef | null | undefined) {
+export function useBackRef<T extends BaseModel = BaseModel>(
+  backRef: BackRef<T> | null | undefined,
+) {
   const [tick, forceRender] = useState(0);
 
   useEffect(() => {
@@ -507,4 +452,22 @@ export function useBackRef<T = any>(backRef: BackRef | null | undefined) {
     error: backRef.error ?? null,
     reload: () => backRef.load(),
   };
+}
+
+function useStableCallback<TParams extends unknown[], TResult>(
+  callback: (...args: TParams) => TResult,
+): (...args: TParams) => TResult {
+  const computedRef = useRef(callback);
+  const stableRef = useRef((...args: TParams) => {
+    return computedRef.current(...args);
+  });
+
+  useLayoutEffect(
+    function updateStableCallbackRef() {
+      computedRef.current = callback;
+    },
+    [callback],
+  );
+
+  return stableRef.current;
 }

@@ -5,7 +5,7 @@ import { Issue } from "@/sync/models";
 
 export default function Page() {
   const { sm: store } = useSyncEngine();
-  const issues = useModels<Issue>("Issue");
+  const { items: issues } = useModels<Issue>("Issue");
   const { undo, redo, canUndo, canRedo } = useUndoRedo();
 
   const createIssue = () => {

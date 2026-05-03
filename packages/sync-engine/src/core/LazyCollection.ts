@@ -23,10 +23,10 @@
  *       the back-referenced model is also removed from the pool
  *
  * Usage from React:
- *   const team = useModel("Team", teamId);
+ *   const { item: team } = useModel("Team", teamId);
  *   const { items, isLoading, load } = team.issues;  // RefCollection
  *   // or via hook:
- *   const { items, isLoading } = useLazyCollection(team?.issues);
+ *   const { items, isLoading } = useCollection(team?.issues);
  */
 
 import { observable, runInAction, makeObservable } from "mobx";

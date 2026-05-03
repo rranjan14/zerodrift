@@ -36,7 +36,7 @@ interface InverseDecl {
 type InverseLinkTarget = LazyCollectionBase | BackRef;
 
 /** Read a dynamic FK property off a model instance, or null if missing/empty. */
-function readFk(instance: BaseModel, key: string): string | null {
+export function readFk(instance: BaseModel, key: string): string | null {
   const v = (instance as unknown as Record<string, unknown>)[key];
   return typeof v === "string" && v !== "" ? v : null;
 }
