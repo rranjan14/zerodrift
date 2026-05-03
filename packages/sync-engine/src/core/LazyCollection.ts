@@ -31,6 +31,7 @@
 
 import { observable, runInAction, makeObservable } from "mobx";
 import type { BaseModel } from "./BaseModel";
+import { readFk } from "./ObjectPool";
 
 // ---------------------------------------------------------------------------
 // Loading state
@@ -185,11 +186,17 @@ export class RefCollection<
   /** The foreign key on the child model (e.g. "teamId"). */
   readonly inverseKey: string;
 
+  /** Additional FK axes on the parent that the loader should also query. */
+  readonly coveringIndexes: string[];
+
   /** The ID of the parent model (e.g. team.id). Set during hydrate(). */
   parentId: string = "";
 
-  // In the engine, getCoveringPartialIndexValues() computes these.
-  // For a simple case: [{ key: "teamId", value: "t-eng" }]
+  /**
+   * Cached covering values. Built in `hydrate()` from the parent's id +
+   * `coveringIndexes` axes; `runLoad` passes this to the loader, which
+   * turns each entry into a `loadCollection` call and unions the results.
+   */
   private partialIndexValues: Array<{ key: string; value: string }> = [];
 
   private loader:
@@ -199,18 +206,41 @@ export class RefCollection<
       ) => Promise<T[]>)
     | null = null;
 
-  constructor(referencedModelName: string, inverseKey: string) {
+  constructor(
+    referencedModelName: string,
+    inverseKey: string,
+    coveringIndexes: string[] = [],
+  ) {
     super(referencedModelName);
     this.inverseKey = inverseKey;
+    this.coveringIndexes = coveringIndexes;
   }
 
   /**
    * Called by Model.hydrate() after the parent model is populated.
-   * Computes the partial index values for future IDB queries.
+   * Computes the covering partial-index values used for future loads.
    */
-  hydrate(parentId: string) {
-    this.parentId = parentId;
-    this.partialIndexValues = [{ key: this.inverseKey, value: parentId }];
+  hydrate(parent: BaseModel) {
+    this.parentId = parent.id;
+    const values: Array<{ key: string; value: string }> = [
+      { key: this.inverseKey, value: parent.id },
+    ];
+    for (const axis of this.coveringIndexes) {
+      const v = readFk(parent, axis);
+      if (v != null) {
+        values.push({ key: axis, value: v });
+      }
+    }
+    this.partialIndexValues = values;
+  }
+
+  /**
+   * The set of (key, value) queries this collection's loader will run. One
+   * entry for the FK match; one per covering axis whose value is non-empty
+   * on the parent.
+   */
+  getCoveringPartialIndexValues(): ReadonlyArray<{ key: string; value: string }> {
+    return this.partialIndexValues;
   }
 
   /** Wire the loader function. Called by StoreManager. */

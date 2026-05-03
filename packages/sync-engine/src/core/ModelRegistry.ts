@@ -125,6 +125,7 @@ class ModelRegistryImpl {
             `idField=${prop.idField ?? ""}`,
             `idsField=${prop.idsField ?? ""}`,
             `onDelete=${prop.onDelete ?? ""}`,
+            `coveringIndexes=${(prop.coveringIndexes ?? []).join("|")}`,
           ].join(";"),
         )
         .join(",");

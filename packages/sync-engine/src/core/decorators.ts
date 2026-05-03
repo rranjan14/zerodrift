@@ -232,6 +232,13 @@ export function LazyReference(referenceTo: string, opts: ReferenceOpts = {}) {
 
 interface ReferenceCollectionOpts {
   inverseOf?: string;
+  /**
+   * Names of additional FK fields on the parent model that should each become
+   * an extra query when the collection loads. The loader unions the results.
+   * Use for multi-axis lazy queries (e.g. "all comments for this issue PLUS
+   * everything in the sync groups the user belongs to").
+   */
+  coveringIndexes?: string[];
 }
 
 function defineReferenceCollection(
@@ -257,6 +264,7 @@ function defineReferenceCollection(
       referenceTo,
       lazy,
       inverseOf: inverseKey,
+      coveringIndexes: opts.coveringIndexes,
     });
 
     Object.defineProperty(target, key, {

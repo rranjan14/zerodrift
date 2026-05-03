@@ -86,6 +86,15 @@ export interface PropertyMeta {
   idField?: string; // for ReferenceModel: the backing ID property name (e.g. "teamId")
   idsField?: string; // for OwnedCollection: the array property holding the IDs (e.g. "issueIds")
   onDelete?: "cascade" | "nullify" | "restrict";
+  /**
+   * Additional FK axes a `@*ReferenceCollection` covers beyond `inverseOf`.
+   * Each entry names a property on the *parent* model whose value is also a
+   * partial-index key on the child. At hydrate time the collection reads
+   * `parent[axis]` and emits an extra query, so the load fetches the union of
+   * (inverseOf == parent.id) plus each covering axis. Used for sync-group
+   * scoping and similar multi-axis lazy queries.
+   */
+  coveringIndexes?: string[];
 }
 
 /** Metadata about a model class, stored in the ModelRegistry. */

@@ -245,6 +245,40 @@ export class TestLayeredAccount extends BaseModel {
   public layerId = "";
 }
 
+// ── TestScopedAlert / TestAlertNote (covering-index opt-in) ──────────────────
+//
+// TestScopedAlert exposes a lazy collection of TestAlertNotes keyed by
+// `alertId`, and additionally covers the `groupId` axis. When the parent
+// hydrates, the collection's loader fires one load for `alertId === alert.id`
+// AND one for `groupId === alert.groupId`, unioning the results.
+
+@ClientModel({ loadStrategy: LoadStrategy.Instant })
+export class TestScopedAlert extends BaseModel {
+  @Property()
+  public title = "";
+
+  @Property({ indexed: true })
+  public groupId = "";
+
+  @LazyReferenceCollection("TestAlertNote", {
+    inverseOf: "alertId",
+    coveringIndexes: ["groupId"],
+  })
+  public notes: RefCollection<TestAlertNote>;
+}
+
+@ClientModel({ loadStrategy: LoadStrategy.Partial })
+export class TestAlertNote extends BaseModel {
+  @Property()
+  public body = "";
+
+  @Property({ indexed: true })
+  public alertId = "";
+
+  @Property({ indexed: true })
+  public groupId = "";
+}
+
 // ── TestNote (BackReference cascade via SyncConnection) ───────────────────────
 
 // ── TestMetric (ephemeral / pool-only model) ────────────────────────────────

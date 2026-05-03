@@ -215,23 +215,21 @@ export class BaseModel {
           const collection = new RefCollection(
             prop.referenceTo!,
             prop.inverseOf!,
+            prop.coveringIndexes ?? [],
           );
-          collection.hydrate(this.id);
+          collection.hydrate(this);
 
           // Wire loader from StoreManager (for async IDB/server loading)
           if (BaseModel.storeManager != null) {
             const sm = BaseModel.storeManager;
             collection.setLoader(async (modelName, queries) => {
-              const results: BaseModel[] = [];
-              for (const q of queries) {
-                const items = await sm.loadCollection(
-                  modelName,
-                  q.key,
-                  q.value,
-                );
-                results.push(...items);
-              }
-              return results;
+              // Each axis is an independent IDB read; fire in parallel.
+              const batches = await Promise.all(
+                queries.map((q) =>
+                  sm.loadCollection(modelName, q.key, q.value),
+                ),
+              );
+              return batches.flat();
             });
             const parentModelName = meta.name;
             const parentId = this.id;
