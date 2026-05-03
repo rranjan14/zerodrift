@@ -620,6 +620,57 @@ describe("SyncConnection", () => {
 
       expect(existing.text).toBe("updated");
     });
+
+    it("hydrates a Partial model on update when the new FK lands in a loaded scope", async () => {
+      // Phase 5 — dependents loader. The model isn't in the pool, but a U
+      // delta gives it a parent we already track. Read the merged record from
+      // IDB and hydrate so the parent's RefCollection picks it up.
+      // Pre-existing record in IDB pointing at t-other (uninteresting scope).
+      await db.writeModels("TestActivity", [
+        { id: "act-1", taskId: "t-other", text: "before" },
+      ]);
+      // We track t1's activities — but not t-other's — so the model isn't in pool.
+      loadedCollections.add("TestActivity:taskId:t1");
+      expect(pool.getById("TestActivity", "act-1")).toBeUndefined();
+
+      await process(connWithChecker, {
+        syncId: 1,
+        syncActions: [
+          {
+            action: "U",
+            modelName: "TestActivity",
+            modelId: "act-1",
+            data: { taskId: "t1" },
+          },
+        ],
+      });
+
+      const hydrated = pool.getById("TestActivity", "act-1") as TestActivity;
+      expect(hydrated).toBeDefined();
+      expect(hydrated.taskId).toBe("t1");
+    });
+
+    it("ignores a Partial model update when the new FK still isn't in scope", async () => {
+      await db.writeModels("TestActivity", [
+        { id: "act-1", taskId: "t-other", text: "before" },
+      ]);
+      loadedCollections.add("TestActivity:taskId:t1"); // we care about t1 only
+      expect(pool.getById("TestActivity", "act-1")).toBeUndefined();
+
+      await process(connWithChecker, {
+        syncId: 1,
+        syncActions: [
+          {
+            action: "U",
+            modelName: "TestActivity",
+            modelId: "act-1",
+            data: { taskId: "t-still-other" },
+          },
+        ],
+      });
+
+      expect(pool.getById("TestActivity", "act-1")).toBeUndefined();
+    });
   });
 
   // ── transform ─────────────────────────────────────────────────────────────

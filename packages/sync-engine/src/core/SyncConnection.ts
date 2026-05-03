@@ -192,9 +192,11 @@ export class SyncConnection extends BaseSSEConnection {
         }
       }
 
-      // Step 3: apply to in-memory + rebase + cascade + invalidate
+      // Step 3: apply to in-memory + rebase + cascade. Each action may need to
+      // read from IDB to decide whether to hydrate a not-yet-pooled model
+      // whose update brings it into a loaded scope, so this is async.
       for (const action of packet.syncActions) {
-        this.applySyncAction(action);
+        await this.applySyncAction(action);
       }
 
       // Step 4: advance lastSyncId
@@ -215,7 +217,7 @@ export class SyncConnection extends BaseSSEConnection {
   // Apply a single sync action to the in-memory ObjectPool
   // =========================================================================
 
-  private applySyncAction(action: SyncAction) {
+  private async applySyncAction(action: SyncAction) {
     const modelMeta = ModelRegistry.getModelMeta(action.modelName);
     if (modelMeta == null) {
       return;
@@ -250,8 +252,25 @@ export class SyncConnection extends BaseSSEConnection {
         if (model != null) {
           model.hydrate(action.data);
           this.pool.put(action.modelName, model);
-          this.queue.rebaseAll(action.modelId, action.modelName, action.data);
+        } else if (modelMeta.loadStrategy !== LoadStrategy.Ephemeral) {
+          // Dependents loader: the model isn't in the pool, but the update
+          // may have moved it into a scope we already track. Step 2 wrote the
+          // merged record to IDB; read it back and let `shouldHydrateInsert`
+          // decide whether to hydrate based on the post-update FK values.
+          // (Ephemeral models skip IDB entirely in step 2, so there's never
+          // anything to read.)
+          const idbRecord = await this.database.readModel(
+            action.modelName,
+            action.modelId,
+          );
+          if (
+            idbRecord != null &&
+            this.shouldHydrateInsert(modelMeta, idbRecord)
+          ) {
+            this.pool.hydrateAndPut(action.modelName, modelMeta, idbRecord);
+          }
         }
+        this.queue.rebaseAll(action.modelId, action.modelName, action.data);
         break;
       }
 
