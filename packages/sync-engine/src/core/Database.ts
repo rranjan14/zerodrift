@@ -69,27 +69,38 @@ export function currentModelVersions(): Record<string, number> {
 }
 
 /**
- * Diff stored vs current per-model schemaVersions and clear any model whose
- * version bumped (or that was removed from the registry entirely). Returns
- * the names of cleared models so the caller can flip its
- * `migrationClearedModels` flag.
+ * Diff stored vs current per-model schemaVersions. `cleared` lists models
+ * whose version bumped (rows + partial-index coverage wiped) and models
+ * removed from the registry (coverage wiped). `newlyAdded` lists models
+ * present in the registry but missing from a non-empty `stored` snapshot —
+ * the caller targets these in a follow-up full-bootstrap call.
  */
-export async function clearStaleModels(
+export async function diffModelVersions(
   adapter: Pick<
     StorageAdapter,
     "clearModelStore" | "clearPartialIndexesForModel"
   >,
   stored: Record<string, number> | undefined,
-): Promise<string[]> {
+): Promise<{ cleared: string[]; newlyAdded: string[] }> {
   const cleared: string[] = [];
+  const newlyAdded: string[] = [];
   const current = currentModelVersions();
   const storedMap = stored ?? {};
-  // Bumped models still in the registry: clear rows + partial-index coverage.
+  const knownStored = Object.keys(storedMap).length > 0;
+
   for (const [name, version] of Object.entries(current)) {
     const previous = storedMap[name];
-    // First-time field (no record) is treated as "trust the existing data" —
-    // adopters upgrading the engine for the first time shouldn't lose rows.
-    if (previous == null || previous === version) {
+    if (previous == null) {
+      // No record for this model. Treat as "newly added" only when the
+      // adopter has previously persisted some versions (i.e. they upgraded
+      // the engine *and* added a model). Otherwise it's a legacy meta and we
+      // trust the existing rows.
+      if (knownStored) {
+        newlyAdded.push(name);
+      }
+      continue;
+    }
+    if (previous === version) {
       continue;
     }
     await adapter.clearModelStore(name);
@@ -105,7 +116,7 @@ export async function clearStaleModels(
       cleared.push(name);
     }
   }
-  return cleared;
+  return { cleared, newlyAdded };
 }
 
 /**
@@ -123,6 +134,13 @@ export interface StorageAdapter {
   saveMeta(meta: DatabaseMeta): Promise<void>;
   get currentMeta(): DatabaseMeta | null;
   determineBootstrapType(): Promise<BootstrapType>;
+  /**
+   * Names of models present in the live registry but missing from the
+   * persisted `modelSchemaVersions` snapshot — i.e., new since the last
+   * connect. Populated during `connect()`. StoreManager runs a targeted
+   * full fetch for just these so adopters don't need to bump anything.
+   */
+  readonly migrationAddedNewModels: string[];
   writeModels(
     modelName: string,
     records: Record<string, unknown>[],
@@ -196,8 +214,7 @@ export class Database implements StorageAdapter {
   private workspaceId: string;
   private meta: DatabaseMeta | null = null;
 
-  /** Set to true if a migration added new model stores that need data. */
-  migrationAddedNewModels = false;
+  migrationAddedNewModels: string[] = [];
   /** Set to true if connect() cleared rows for one or more models because
    * their per-model `schemaVersion` bumped. Forces a Full bootstrap so the
    * cleared rows refill from the server. */
@@ -215,7 +232,7 @@ export class Database implements StorageAdapter {
     // Reset per-connect flags so reconnects don't carry forward a previous
     // session's "force Full" signal.
     this.migrationClearedModels = false;
-    this.migrationAddedNewModels = false;
+    this.migrationAddedNewModels = [];
 
     // Gracefully handle environments without IndexedDB (Node.js, agents).
     // All methods guard on this.db == null, so the engine runs in-memory.
@@ -247,12 +264,23 @@ export class Database implements StorageAdapter {
     // Step 4: Reopen at newVersion → triggers onupgradeneeded
     this.db = await this.openDBWithMigration(dbName, newVersion);
 
-    // Step 5: Clear data for models whose schemaVersion bumped. The IDB
-    // structure migrated in step 4, but rows serialized against the old
-    // shape need to go.
+    // Step 5: Diff per-model schemaVersions. Bumped models get their rows +
+    // partial-index coverage wiped (the IDB structure migrated in step 4 but
+    // the rows are still in the old shape). Newly added models are reported
+    // for a targeted follow-up fetch by StoreManager.
     if (meta != null) {
-      const cleared = await clearStaleModels(this, meta.modelSchemaVersions);
+      const { cleared, newlyAdded } = await diffModelVersions(
+        this,
+        meta.modelSchemaVersions,
+      );
       this.migrationClearedModels = cleared.length > 0;
+      // migrateSchema already pushed any model whose IDB store was newly
+      // created (covering the legacy-meta + new-model case where stored
+      // versions are empty); on the typical "adopter added a new model" path
+      // both sources fire for the same name, so we dedupe.
+      this.migrationAddedNewModels = [
+        ...new Set([...this.migrationAddedNewModels, ...newlyAdded]),
+      ];
     }
 
     // Update the dbVersion + per-model versions in meta after migration
@@ -379,7 +407,7 @@ export class Database implements StorageAdapter {
     for (const modelName of registeredModels) {
       if (!existingStores.has(modelName)) {
         this.createModelStore(db, modelName);
-        this.migrationAddedNewModels = true;
+        this.migrationAddedNewModels.push(modelName);
       }
     }
 
@@ -460,17 +488,12 @@ export class Database implements StorageAdapter {
       return BootstrapType.Full;
     }
 
-    // If migration added new model stores, those stores need data.
-    // A partial bootstrap (delta since lastSyncId) should cover this —
-    // the server sends all data for models the client doesn't have.
-    // But if the delta is too old, fall back to full.
-    if (this.migrationAddedNewModels) {
-      // Partial bootstrap should work — server sends everything since lastSyncId,
-      // which includes data for the new model types.
-      // Only fall back to full if there's no lastSyncId at all.
-      if (meta.lastSyncId <= 0) {
-        return BootstrapType.Full;
-      }
+    // If migration added new model stores AND there's no prior sync, fall
+    // back to Full — there's nothing to fetch deltas against. With a
+    // lastSyncId in hand, partial bootstrap proceeds and StoreManager runs
+    // a targeted fullBootstrap call for just `migrationAddedNewModels` after.
+    if (this.migrationAddedNewModels.length > 0 && meta.lastSyncId <= 0) {
+      return BootstrapType.Full;
     }
 
     // A schemaVersion bump cleared rows for one or more models — partial

@@ -11,7 +11,7 @@
 
 import {
   BootstrapType,
-  clearStaleModels,
+  diffModelVersions,
   currentModelVersions,
   type DatabaseMeta,
   type PartialIndexEntry,
@@ -31,17 +31,22 @@ export class MemoryAdapter implements StorageAdapter {
   >();
   /** Set true when connect() cleared rows for a schemaVersion-bumped model. */
   migrationClearedModels = false;
+  /** Names of models added since the last connect — StoreManager target-fetches
+   * these so adopters don't have to bump schemaVersion by hand. */
+  migrationAddedNewModels: string[] = [];
 
   async connect(): Promise<void> {
     this.connected = true;
     this.migrationClearedModels = false;
+    this.migrationAddedNewModels = [];
     if (this.meta != null) {
-      const cleared = await clearStaleModels(
+      const { cleared, newlyAdded } = await diffModelVersions(
         this,
         this.meta.modelSchemaVersions,
       );
-      if (cleared.length > 0) {
-        this.migrationClearedModels = true;
+      this.migrationClearedModels = cleared.length > 0;
+      this.migrationAddedNewModels = newlyAdded;
+      if (cleared.length > 0 || newlyAdded.length > 0) {
         this.meta.modelSchemaVersions = currentModelVersions();
       }
     }

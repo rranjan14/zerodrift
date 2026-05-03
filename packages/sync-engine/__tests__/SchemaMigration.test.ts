@@ -1,7 +1,9 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { MemoryAdapter } from "@sync-engine/MemoryAdapter";
 import { ModelRegistry } from "@sync-engine/ModelRegistry";
-import { BootstrapType } from "@sync-engine/Database";
+import { StoreManager } from "@sync-engine/StoreManager";
+import { BootstrapType, currentModelVersions } from "@sync-engine/Database";
+import { BaseModel } from "@sync-engine/BaseModel";
 import "./fixtures";
 
 /**
@@ -11,6 +13,16 @@ import "./fixtures";
  * MemoryAdapter mirrors the same compare/clear semantics as the IDB-backed
  * Database, so adopters running headless (Node, agents) get the same behavior.
  */
+
+/** Build a `modelSchemaVersions` snapshot covering every registered model
+ * EXCEPT the named one — useful for simulating a session that ran before
+ * `name` was added to the registry. */
+function versionsWithout(name: string): Record<string, number> {
+  const versions = { ...currentModelVersions() };
+  delete versions[name];
+  return versions;
+}
+
 describe("Per-model schemaVersion migration", () => {
   it("clears rows + partial-index coverage when a model's schemaVersion bumps", async () => {
     const adapter = new MemoryAdapter();
@@ -144,6 +156,92 @@ describe("Per-model schemaVersion migration", () => {
       );
     } finally {
       activity.schemaVersion = original;
+    }
+  });
+
+  it("flags newly added models on connect (when stored versions are non-empty)", async () => {
+    const adapter = new MemoryAdapter();
+    // Simulate a session that ran before TestActivity was added.
+    await adapter.saveMeta({
+      lastSyncId: 100,
+      subscribedSyncGroups: [],
+      schemaHash: "any",
+      dbVersion: 1,
+      backendDatabaseVersion: 0,
+      modelSchemaVersions: versionsWithout("TestActivity"),
+    });
+
+    await adapter.connect();
+
+    expect(adapter.migrationAddedNewModels).toEqual(["TestActivity"]);
+  });
+
+  it("does not flag any models as 'new' on legacy meta (no stored versions at all)", async () => {
+    // Adopter upgrading the engine for the first time: meta exists from a
+    // prior session but `modelSchemaVersions` is undefined. We trust the
+    // existing data and don't trigger a wholesale re-fetch.
+    const adapter = new MemoryAdapter();
+    await adapter.saveMeta({
+      lastSyncId: 100,
+      subscribedSyncGroups: [],
+      schemaHash: "any",
+      dbVersion: 1,
+      backendDatabaseVersion: 0,
+      modelSchemaVersions: {},
+    });
+
+    await adapter.connect();
+
+    expect(adapter.migrationAddedNewModels).toEqual([]);
+  });
+
+  it("StoreManager runs a targeted full fetch for newly added models after partial bootstrap", async () => {
+    BaseModel.storeManager = null;
+    const adapter = new MemoryAdapter();
+    // Persist meta as if a previous session knew about every registered model
+    // EXCEPT TestActivity — only that one should trigger the targeted fetch.
+    await adapter.saveMeta({
+      lastSyncId: 100,
+      subscribedSyncGroups: [],
+      schemaHash: "any",
+      dbVersion: 1,
+      backendDatabaseVersion: 0,
+      modelSchemaVersions: versionsWithout("TestActivity"),
+    });
+
+    const calls: Array<{ type: string; onlyModels?: string[] }> = [];
+    const bootstrapFetcher = vi.fn(async (type, options) => {
+      calls.push({ type, onlyModels: options?.onlyModels });
+      // Partial returns no deltas; targeted full returns a TestActivity row.
+      const models: Record<string, Record<string, unknown>[]> =
+        options?.onlyModels?.includes("TestActivity")
+          ? { TestActivity: [{ id: "a1", taskId: "t1", text: "fetched" }] }
+          : {};
+      return { lastSyncId: 100, subscribedSyncGroups: [], models };
+    });
+
+    const manager = new StoreManager({
+      workspaceId: crypto.randomUUID(),
+      bootstrapFetcher,
+      storageAdapter: adapter,
+    });
+    try {
+      await manager.bootstrap();
+
+      // Bootstrap: one Partial call + one targeted Full for TestActivity.
+      expect(calls).toEqual([
+        expect.objectContaining({ type: BootstrapType.Partial }),
+        expect.objectContaining({
+          type: BootstrapType.Full,
+          onlyModels: ["TestActivity"],
+        }),
+      ]);
+      // The fetched row landed in IDB.
+      const row = await adapter.readModel("TestActivity", "a1");
+      expect(row?.text).toBe("fetched");
+    } finally {
+      await manager.teardown();
+      BaseModel.storeManager = null;
     }
   });
 

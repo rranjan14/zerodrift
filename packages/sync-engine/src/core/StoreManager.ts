@@ -408,6 +408,12 @@ export class StoreManager {
         await this.fullBootstrap();
       } else if (type === BootstrapType.Partial) {
         await this.partialBootstrap();
+        // Partial deltas can't fill newly-added models — fetch them in full.
+        if (this.database.migrationAddedNewModels.length > 0) {
+          await this.fetchNewlyAddedModels(
+            this.database.migrationAddedNewModels,
+          );
+        }
       } else {
         await this.localBootstrap();
       }
@@ -1031,13 +1037,7 @@ export class StoreManager {
       return { schemaMismatch: true };
     }
 
-    await Promise.all(
-      Object.entries(res.models).map(async ([modelName, records]) => {
-        await this.database.writeModels(modelName, records);
-        this.hydrateInstantModels(modelName, records);
-      }),
-    );
-    await this.applyDeletedIds(res);
+    await this.applyBootstrapResponse(res);
 
     // Don't touch dbMeta.lastSyncId. It's a *global* checkpoint — the highest
     // syncId for which we've applied every event across every subscribed group.
@@ -1049,6 +1049,38 @@ export class StoreManager {
     // anything the scoped fetcher delivered and writes are overwrite-by-id.
 
     return { schemaMismatch: false };
+  }
+
+  /**
+   * Targeted full fetch for models added to the registry since the last
+   * connect. Runs after partial bootstrap so existing models keep their
+   * delta-only path; new models get a full snapshot.
+   */
+  private async fetchNewlyAddedModels(modelNames: string[]): Promise<void> {
+    let res: BootstrapResponse;
+    try {
+      res = await this.config.bootstrapFetcher(BootstrapType.Full, {
+        onlyModels: modelNames,
+        currentMeta: this.database.currentMeta,
+      });
+    } catch (err) {
+      this.emitError(err, { kind: "deferredBootstrap", modelNames });
+      return;
+    }
+    await this.applyBootstrapResponse(res);
+  }
+
+  /** Write a bootstrap response into IDB + the in-memory pool, then apply
+   * any tombstones it carries. Shared by `fetchSyncGroupModels` and
+   * `fetchNewlyAddedModels` — both are targeted full fetches. */
+  private async applyBootstrapResponse(res: BootstrapResponse): Promise<void> {
+    await Promise.all(
+      Object.entries(res.models).map(async ([modelName, records]) => {
+        await this.database.writeModels(modelName, records);
+        this.hydrateInstantModels(modelName, records);
+      }),
+    );
+    await this.applyDeletedIds(res);
   }
 
   /**
