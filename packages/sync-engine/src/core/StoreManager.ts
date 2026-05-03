@@ -26,6 +26,7 @@ import {
   BootstrapType,
   type StorageAdapter,
   type DatabaseMeta,
+  type PartialIndexEntry,
 } from "./Database";
 import {
   FullStore,
@@ -262,12 +263,12 @@ export class StoreManager {
   private stopped = false;
 
   /**
-   * Hot cache of collection coverage. Backed by the storage adapter's
-   * `__partialIndexes` store, so coverage survives reload — the cache is
-   * populated from disk during bootstrap and updated on every successful
-   * `loadCollection`. Key format: "ModelName:indexKey:value".
+   * Hot cache of collection coverage, keyed by `"modelName:indexKey:value"`.
+   * Each value carries the structured tuple plus the `firstSyncId` (the
+   * `lastSyncId` at the time of fetch). Mirrored to the storage adapter's
+   * `__partialIndexes` store, so coverage survives reload.
    */
-  private loadedCollections = new Set<string>();
+  private partialIndexCoverage = new Map<string, PartialIndexEntry>();
   private loadedIds = new Set<string>();
 
   constructor(config: StoreManagerConfig) {
@@ -360,12 +361,13 @@ export class StoreManager {
       // is non-fatal — the cache stays empty and we re-fetch on demand.
       try {
         for (const entry of await this.database.loadPartialIndexes()) {
-          this.loadedCollections.add(
+          this.partialIndexCoverage.set(
             StoreManager.collectionKey(
               entry.modelName,
               entry.indexKey,
               entry.value,
             ),
+            entry,
           );
         }
       } catch (err) {
@@ -1198,25 +1200,6 @@ export class StoreManager {
     return `${modelName}:${indexKey}:${value}`;
   }
 
-  private static parseCollectionKey(
-    key: string,
-    modelName: string,
-  ): { indexKey: string; value: string } | null {
-    const prefix = `${modelName}:`;
-    if (!key.startsWith(prefix)) {
-      return null;
-    }
-    const rest = key.slice(prefix.length);
-    const separatorIdx = rest.indexOf(":");
-    if (separatorIdx === -1) {
-      return null;
-    }
-    return {
-      indexKey: rest.slice(0, separatorIdx),
-      value: rest.slice(separatorIdx + 1),
-    };
-  }
-
   private static modelIdKey(modelName: string, id: string): string {
     return `${modelName}:${id}`;
   }
@@ -1241,7 +1224,7 @@ export class StoreManager {
     if (
       meta?.loadStrategy !== LoadStrategy.Instant &&
       this.config.onDemandFetcher != null &&
-      !this.loadedCollections.has(key)
+      !this.partialIndexCoverage.has(key)
     ) {
       // The server fetch intentionally happens before the IDB read.
       //
@@ -1279,7 +1262,13 @@ export class StoreManager {
       }
       // Mark loaded before the IDB read so SSE inserts arriving during
       // that read are hydrated directly rather than waiting for next access.
-      this.loadedCollections.add(key);
+      // The persistent record is set later via markPartialIndexLoaded.
+      this.partialIndexCoverage.set(key, {
+        modelName,
+        indexKey,
+        value,
+        firstSyncId: this.database.currentMeta?.lastSyncId ?? 0,
+      });
     }
 
     if (!isEphemeral) {
@@ -1309,22 +1298,40 @@ export class StoreManager {
     indexKey: string,
     value: string,
   ): boolean {
-    return this.loadedCollections.has(
+    return this.partialIndexCoverage.has(
       StoreManager.collectionKey(modelName, indexKey, value),
     );
   }
 
-  /** Mark a `(modelName, indexKey, value)` query as fully covered locally —
-   * both in the in-memory cache and the storage adapter's persistent store. */
+  /** Mark a `(modelName, indexKey, value)` query as fully covered locally as
+   * of `firstSyncId`. Updates the in-memory hot cache and the storage
+   * adapter's persistent store. */
   private async markPartialIndexLoaded(
     modelName: string,
     indexKey: string,
     value: string,
   ): Promise<void> {
-    this.loadedCollections.add(
+    const firstSyncId = this.database.currentMeta?.lastSyncId ?? 0;
+    this.partialIndexCoverage.set(
       StoreManager.collectionKey(modelName, indexKey, value),
+      { modelName, indexKey, value, firstSyncId },
     );
-    await this.database.recordPartialIndex(modelName, indexKey, value);
+    await this.database.recordPartialIndex(
+      modelName,
+      indexKey,
+      value,
+      firstSyncId,
+    );
+  }
+
+  /**
+   * Returns every recorded `(modelName, indexKey, value, firstSyncId)` tuple
+   * known to this client. Adopters can ship the result to the server alongside
+   * a partial fetch so it can return only deltas since each scope's
+   * `firstSyncId` instead of re-shipping the full snapshot.
+   */
+  getPartialIndexCoverage(): PartialIndexEntry[] {
+    return [...this.partialIndexCoverage.values()];
   }
 
   // ── Eviction helpers ──────────────────────────────────────────────────────
@@ -1379,7 +1386,7 @@ export class StoreManager {
   ): Promise<void> {
     this.evictFromPool(modelName, (m) => m[indexKey] === value);
     await this.database.deleteModelsByIndex(modelName, indexKey, value);
-    this.loadedCollections.delete(
+    this.partialIndexCoverage.delete(
       StoreManager.collectionKey(modelName, indexKey, value),
     );
     await this.database.clearPartialIndex(modelName, indexKey, value);
@@ -1638,10 +1645,9 @@ export class StoreManager {
     const prefix = `${modelName}:`;
 
     const collectionKeys: { indexKey: string; value: string }[] = [];
-    for (const key of [...this.loadedCollections]) {
-      const parsed = StoreManager.parseCollectionKey(key, modelName);
-      if (parsed != null) {
-        collectionKeys.push(parsed);
+    for (const entry of this.partialIndexCoverage.values()) {
+      if (entry.modelName === modelName) {
+        collectionKeys.push({ indexKey: entry.indexKey, value: entry.value });
       }
     }
 
@@ -1696,7 +1702,7 @@ export class StoreManager {
     await this.database.close();
     this.objectPool.clear();
     this.stores.clear();
-    this.loadedCollections.clear();
+    this.partialIndexCoverage.clear();
     this.loadedIds.clear();
     this.setPhase(BootstrapPhase.Idle);
   }

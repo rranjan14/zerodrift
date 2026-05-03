@@ -12,6 +12,7 @@
 import {
   BootstrapType,
   type DatabaseMeta,
+  type PartialIndexEntry,
   type StorageAdapter,
 } from "./Database";
 
@@ -21,8 +22,11 @@ export class MemoryAdapter implements StorageAdapter {
   private txLog: { key: number; data: unknown }[] = [];
   private nextKey = 1;
   private connected = false;
-  /** modelName → indexKey → set of recorded values. */
-  private partialIndexes = new Map<string, Map<string, Set<string>>>();
+  /** modelName → indexKey → value → firstSyncId at the time of fetch. */
+  private partialIndexes = new Map<
+    string,
+    Map<string, Map<string, number>>
+  >();
 
   async connect(): Promise<void> {
     this.connected = true;
@@ -163,6 +167,7 @@ export class MemoryAdapter implements StorageAdapter {
     modelName: string,
     indexKey: string,
     value: string,
+    firstSyncId: number,
   ): Promise<void> {
     let byModel = this.partialIndexes.get(modelName);
     if (byModel == null) {
@@ -171,10 +176,10 @@ export class MemoryAdapter implements StorageAdapter {
     }
     let byKey = byModel.get(indexKey);
     if (byKey == null) {
-      byKey = new Set();
+      byKey = new Map();
       byModel.set(indexKey, byKey);
     }
-    byKey.add(value);
+    byKey.set(value, firstSyncId);
   }
 
   async clearPartialIndex(
@@ -189,15 +194,12 @@ export class MemoryAdapter implements StorageAdapter {
     this.partialIndexes.delete(modelName);
   }
 
-  async loadPartialIndexes(): Promise<
-    Array<{ modelName: string; indexKey: string; value: string }>
-  > {
-    const out: Array<{ modelName: string; indexKey: string; value: string }> =
-      [];
+  async loadPartialIndexes(): Promise<PartialIndexEntry[]> {
+    const out: PartialIndexEntry[] = [];
     for (const [modelName, byKey] of this.partialIndexes) {
       for (const [indexKey, values] of byKey) {
-        for (const value of values) {
-          out.push({ modelName, indexKey, value });
+        for (const [value, firstSyncId] of values) {
+          out.push({ modelName, indexKey, value, firstSyncId });
         }
       }
     }

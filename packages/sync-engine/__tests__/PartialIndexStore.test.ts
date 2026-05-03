@@ -45,12 +45,13 @@ describe("Persistent partial-index coverage", () => {
       modelName: "TestActivity",
       indexKey: "taskId",
       value: "t1",
+      firstSyncId: 0,
     });
   });
 
   it("rebuilds the in-memory cache from the adapter on bootstrap", async () => {
     const adapter = new MemoryAdapter();
-    await adapter.recordPartialIndex("TestActivity", "taskId", "t1");
+    await adapter.recordPartialIndex("TestActivity", "taskId", "t1", 0);
 
     manager = new StoreManager({
       workspaceId: crypto.randomUUID(),
@@ -70,7 +71,7 @@ describe("Persistent partial-index coverage", () => {
 
   it("skips the server fetch when prior coverage is rehydrated from the adapter", async () => {
     const adapter = new MemoryAdapter();
-    await adapter.recordPartialIndex("TestActivity", "taskId", "t1");
+    await adapter.recordPartialIndex("TestActivity", "taskId", "t1", 0);
     // Pre-seed the adapter with the records so loadCollection returns them via
     // the IDB read path even though the server fetcher is never called.
     await adapter.writeModels("TestActivity", [
@@ -98,7 +99,7 @@ describe("Persistent partial-index coverage", () => {
 
   it("clears coverage when evictByIndex runs", async () => {
     const adapter = new MemoryAdapter();
-    await adapter.recordPartialIndex("TestActivity", "taskId", "t1");
+    await adapter.recordPartialIndex("TestActivity", "taskId", "t1", 0);
 
     manager = new StoreManager({
       workspaceId: crypto.randomUUID(),
@@ -126,15 +127,54 @@ describe("Persistent partial-index coverage", () => {
 
   it("clearPartialIndexesForModel removes all coverage entries for one model", async () => {
     const adapter = new MemoryAdapter();
-    await adapter.recordPartialIndex("TestActivity", "taskId", "t1");
-    await adapter.recordPartialIndex("TestActivity", "taskId", "t2");
-    await adapter.recordPartialIndex("TestComment", "taskId", "t1");
+    await adapter.recordPartialIndex("TestActivity", "taskId", "t1", 0);
+    await adapter.recordPartialIndex("TestActivity", "taskId", "t2", 0);
+    await adapter.recordPartialIndex("TestComment", "taskId", "t1", 0);
 
     await adapter.clearPartialIndexesForModel("TestActivity");
 
     const recorded = await adapter.loadPartialIndexes();
     expect(recorded).toEqual([
-      { modelName: "TestComment", indexKey: "taskId", value: "t1" },
+      {
+        modelName: "TestComment",
+        indexKey: "taskId",
+        value: "t1",
+        firstSyncId: 0,
+      },
     ]);
+  });
+
+  it("records firstSyncId at the time of fetch and exposes it via getPartialIndexCoverage", async () => {
+    const adapter = new MemoryAdapter();
+    await adapter.saveMeta({
+      lastSyncId: 4242,
+      subscribedSyncGroups: [],
+      schemaHash: "hash",
+      dbVersion: 1,
+      backendDatabaseVersion: 0,
+    });
+    const fetcher = vi.fn().mockResolvedValue([
+      { id: "a1", taskId: "t1", text: "first" },
+    ]);
+    manager = new StoreManager({
+      workspaceId: crypto.randomUUID(),
+      bootstrapFetcher: vi.fn().mockResolvedValue({
+        lastSyncId: 4242,
+        subscribedSyncGroups: [],
+        models: {},
+      }),
+      onDemandFetcher: fetcher,
+      storageAdapter: adapter,
+    });
+    await manager.bootstrap();
+
+    await manager.loadCollection("TestActivity", "taskId", "t1");
+
+    expect(manager.getPartialIndexCoverage()).toContainEqual({
+      modelName: "TestActivity",
+      indexKey: "taskId",
+      value: "t1",
+      firstSyncId: 4242,
+    });
   });
 });

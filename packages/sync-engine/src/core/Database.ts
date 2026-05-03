@@ -40,6 +40,18 @@ export enum BootstrapType {
 }
 
 /**
+ * One recorded `loadCollection(modelName, indexKey, value)` query, captured
+ * with the `lastSyncId` at the time of fetch. Adopters ship these to the
+ * server on partial fetches so it can return only deltas since `firstSyncId`.
+ */
+export interface PartialIndexEntry {
+  modelName: string;
+  indexKey: string;
+  value: string;
+  firstSyncId: number;
+}
+
+/**
  * Pluggable storage backend for the sync engine.
  *
  * The default implementation (`Database`) uses IndexedDB and is suited for
@@ -87,13 +99,16 @@ export interface StorageAdapter {
   clearCachedTransactions(): Promise<void>;
   /**
    * Record that a `loadCollection(modelName, indexKey, value)` query has been
-   * fetched in full. Survives reload — on the next bootstrap the engine knows
-   * which scoped queries are already covered locally and can skip the server.
+   * fetched in full as of `firstSyncId`. Survives reload — on the next
+   * bootstrap the engine knows which scoped queries are already covered
+   * locally (and as of which point in the sync log) and can request a
+   * targeted delta instead of a full re-fetch.
    */
   recordPartialIndex(
     modelName: string,
     indexKey: string,
     value: string,
+    firstSyncId: number,
   ): Promise<void>;
   /** Clear coverage for a single (modelName, indexKey, value) tuple. */
   clearPartialIndex(
@@ -104,9 +119,7 @@ export interface StorageAdapter {
   /** Clear all coverage entries for a given model — used by schema migrations. */
   clearPartialIndexesForModel(modelName: string): Promise<void>;
   /** Read every recorded partial index. Called once at connect to populate the in-memory cache. */
-  loadPartialIndexes(): Promise<
-    Array<{ modelName: string; indexKey: string; value: string }>
-  >;
+  loadPartialIndexes(): Promise<PartialIndexEntry[]>;
   /**
    * Close the storage connection without deleting any data.
    * Called by StoreManager.teardown() during React unmount / cleanup.
@@ -638,12 +651,18 @@ export class Database implements StorageAdapter {
     modelName: string,
     indexKey: string,
     value: string,
+    firstSyncId: number,
   ): Promise<void> {
     if (this.db == null) {
       return;
     }
     const tx = this.db.transaction("__partialIndexes", "readwrite");
-    tx.objectStore("__partialIndexes").put({ modelName, indexKey, value });
+    tx.objectStore("__partialIndexes").put({
+      modelName,
+      indexKey,
+      value,
+      firstSyncId,
+    });
     return this.waitForTransaction(tx);
   }
 
@@ -673,15 +692,11 @@ export class Database implements StorageAdapter {
     return this.waitForTransaction(tx);
   }
 
-  async loadPartialIndexes(): Promise<
-    Array<{ modelName: string; indexKey: string; value: string }>
-  > {
+  async loadPartialIndexes(): Promise<PartialIndexEntry[]> {
     if (this.db == null) {
       return [];
     }
-    return this.idbGetAll("__partialIndexes") as Promise<
-      Array<{ modelName: string; indexKey: string; value: string }>
-    >;
+    return this.idbGetAll("__partialIndexes") as Promise<PartialIndexEntry[]>;
   }
 
   // =========================================================================
