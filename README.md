@@ -330,6 +330,12 @@ const sm = new StoreManager({
 
 If your app has a single fixed scope per session, you can omit it.
 
+### Roadmap — compound index-key fetches
+
+Auto-derived covering indexes (see [`agent-docs/04-lazy-loading.md`](agent-docs/04-lazy-loading.md)) are purely client-side: `RefCollection`s walk the parent's FK graph and emit additional partial-index queries when the child denormalizes a parent FK. Adopters need only set `@Property({ indexed: true })` on the denormalized field; no protocol change.
+
+What's not yet built: **server-side compound index-key fetches** — e.g. `?indexedKey=issue.cycleId&keyValue=X&modelName=Comment`, where the server joins through a parent FK so one request returns all comments for every issue in a cycle. Today the engine fans out per-parent batches via `BatchModelLoader` (correct, just N requests). Implementing this needs a backend that handles dotted `indexedKey` paths plus a `serverSupportsCompoundIndexKeys` opt-in on the client so per-parent fan-out stays the default for backends without JOIN support.
+
 ## Documentation
 
 Deeper material lives in [`agent-docs/`](agent-docs/):
