@@ -54,6 +54,29 @@ Available strategies: `Instant`, `Lazy`, `Partial`, `ExplicitlyRequested`, and `
 
 `usedForPartialIndexes: true` means other models can use this model's ID fields as index keys in IndexedDB (used by `RefCollection` queries).
 
+#### Abstract base classes
+
+`@Property` / `@Reference` / `@Action` / `@Computed` and friends do **not** register a model on their own. They stash their metadata in a per-class side-table; only `@ClientModel` registers a model and at that point drains the side-table for the concrete class plus every ancestor up the prototype chain. So you can declare shared fields on an abstract base without registering it:
+
+```ts
+abstract class TaskBase extends BaseModel {
+  @Property() public title = "";
+  @Property({ indexed: true }) public projectId = "";
+}
+
+@ClientModel({ loadStrategy: LoadStrategy.Instant })
+export class Issue extends TaskBase {
+  @Property() public priority = 0;
+}
+
+@ClientModel({ loadStrategy: LoadStrategy.Instant })
+export class Bug extends TaskBase {
+  @Property() public severity = 0;
+}
+```
+
+`Issue`'s registry entry contains `title` + `projectId` + `priority`; `Bug`'s contains `title` + `projectId` + `severity`. `TaskBase` itself never appears in `ModelRegistry.allModels()`. Subclass-declared properties win when a name collides.
+
 ### `@Property`
 
 ```typescript

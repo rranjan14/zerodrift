@@ -404,6 +404,33 @@ export class TestDenormChild extends BaseModel {
   public greatId = "";
 }
 
+// ── Abstract base class with decorated properties ──────────────────────────
+//
+// Verifies the side-table inheritance flow: an abstract class declaring
+// @Property / @Reference / etc. is NOT registered in ModelRegistry, but
+// @ClientModel concrete subclasses inherit its decorations via the
+// prototype-chain drain.
+
+export abstract class TestAbstractBase extends BaseModel {
+  @Property()
+  public sharedTitle = "";
+
+  @Property({ indexed: true })
+  public sharedTaskId = "";
+}
+
+@ClientModel({ loadStrategy: LoadStrategy.Instant })
+export class TestSharedSubclassA extends TestAbstractBase {
+  @Property()
+  public extraA = 0;
+}
+
+@ClientModel({ loadStrategy: LoadStrategy.Instant })
+export class TestSharedSubclassB extends TestAbstractBase {
+  @Property()
+  public extraB = false;
+}
+
 @ClientModel({ loadStrategy: LoadStrategy.Instant })
 export class TestNote extends BaseModel {
   @Property()

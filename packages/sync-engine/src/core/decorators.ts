@@ -18,8 +18,17 @@
 
 import { ModelRegistry } from "./ModelRegistry";
 import { defineObservableProperty } from "./observability";
-import { PropertyType, LoadStrategy, type IObjectPool } from "./types";
+import {
+  PropertyType,
+  LoadStrategy,
+  type IObjectPool,
+  type PropertyMeta,
+  type ModelMeta,
+} from "./types";
 import type { LazyCollectionBase, BackRef } from "./LazyCollection";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Ctor = new (...args: any[]) => any;
 
 // `this`-binding shapes used by the runtime accessors below. Kept narrow so
 // decorators.ts doesn't need to import BaseModel (which would create a cycle).
@@ -37,12 +46,92 @@ interface BackRefHolder {
   __backRefs?: Record<string, BackRef>;
 }
 
-// Helper: ensure a model is registered before attaching properties to it.
-// Legacy decorator target — no better type exists for prototype manipulation
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function ensureRegistered(name: string, ctor: any) {
-  if (ModelRegistry.getModelMeta(name) == null) {
-    ModelRegistry.registerModel(name, ctor);
+// Side-table for property/action/computed metadata declared via decorators.
+// Property decorators run during class-body evaluation — BEFORE @ClientModel
+// runs on the concrete subclass — so they can't write directly to the
+// ModelRegistry without registering abstract base classes too. Instead they
+// stash here, keyed by constructor reference, and @ClientModel drains the
+// chain at register-time. Abstract bases never enter the registry.
+interface PendingClassMeta {
+  properties: Map<string, PropertyMeta>;
+  actions: Set<string>;
+  computedProps: Set<string>;
+}
+const pendingByClass = new WeakMap<Ctor, PendingClassMeta>();
+
+function getOrCreatePending(ctor: Ctor): PendingClassMeta {
+  let entry = pendingByClass.get(ctor);
+  if (entry == null) {
+    entry = {
+      properties: new Map(),
+      actions: new Set(),
+      computedProps: new Set(),
+    };
+    pendingByClass.set(ctor, entry);
+  }
+  return entry;
+}
+
+function stashProperty(ctor: Ctor, prop: PropertyMeta): void {
+  getOrCreatePending(ctor).properties.set(prop.name, prop);
+}
+
+function updateStashedProperty(
+  ctor: Ctor,
+  name: string,
+  updates: Partial<PropertyMeta>,
+): void {
+  const pending = getOrCreatePending(ctor);
+  const existing = pending.properties.get(name);
+  if (existing == null) {
+    throw new Error(
+      `Property "${name}" not found on model "${ctor.name}". ` +
+        `Declare it with @Property() before applying @Reference.`,
+    );
+  }
+  pending.properties.set(name, { ...existing, ...updates });
+}
+
+function stashAction(ctor: Ctor, name: string): void {
+  getOrCreatePending(ctor).actions.add(name);
+}
+
+function stashComputed(ctor: Ctor, name: string): void {
+  getOrCreatePending(ctor).computedProps.add(name);
+}
+
+/** Walk the prototype chain from `ctor`, draining each class's pending
+ * metadata into `meta`. Pending entries are NOT deleted on drain so multiple
+ * subclasses sharing an abstract base each inherit independently, AND deeper
+ * chains (`A extends B extends M`, where B is itself a live model) keep
+ * working — when @ClientModel runs on A it re-walks pending(B) which still
+ * holds B's declarations.
+ *
+ * Subclass-declared properties win over ancestor-declared ones with the same
+ * name (`Map.set` is no-op-when-present via the `has` guard).
+ */
+function drainPendingChain(ctor: Ctor, meta: ModelMeta): void {
+  // Walk the *constructor* chain (not the prototype chain): for
+  // `class B extends A`, `Object.getPrototypeOf(B)` returns `A`, and the
+  // chain terminates at `Function.prototype`. Stopping there is sufficient;
+  // no model class extends `Object` directly.
+  let current: unknown = ctor;
+  while (current != null && current !== Function.prototype) {
+    const pending = pendingByClass.get(current as Ctor);
+    if (pending != null) {
+      for (const [name, prop] of pending.properties) {
+        if (!meta.properties.has(name)) {
+          meta.properties.set(name, prop);
+        }
+      }
+      for (const action of pending.actions) {
+        meta.actions.add(action);
+      }
+      for (const computed of pending.computedProps) {
+        meta.computedProps.add(computed);
+      }
+    }
+    current = Object.getPrototypeOf(current);
   }
 }
 
@@ -74,6 +163,11 @@ export function ClientModel(
     if (opts.schemaVersion != null) {
       meta.schemaVersion = opts.schemaVersion;
     }
+    // Drain decorator-stashed metadata for this class and every ancestor up
+    // the prototype chain. Abstract bases never registered themselves; their
+    // pending entries are read-only from this point on (so siblings sharing
+    // a base each inherit independently).
+    drainPendingChain(ctor, meta);
     return ctor;
   };
 }
@@ -95,8 +189,7 @@ export function Property(
   // Legacy decorator target — no better type exists for prototype manipulation
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return function (target: any, key: string) {
-    ensureRegistered(target.constructor.name, target.constructor);
-    ModelRegistry.registerProperty(target.constructor.name, {
+    stashProperty(target.constructor, {
       name: key,
       type: PropertyType.Property,
       indexed: opts.indexed,
@@ -115,8 +208,7 @@ export function EphemeralProperty() {
   // Legacy decorator target — no better type exists for prototype manipulation
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return function (target: any, key: string) {
-    ensureRegistered(target.constructor.name, target.constructor);
-    ModelRegistry.registerProperty(target.constructor.name, {
+    stashProperty(target.constructor, {
       name: key,
       type: PropertyType.EphemeralProperty,
     });
@@ -162,11 +254,9 @@ function defineReference(
   // Legacy decorator target — no better type exists for prototype manipulation
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return function (target: any, key: string) {
-    const modelName = target.constructor.name;
-    ensureRegistered(modelName, target.constructor);
     const idKey = opts.idField ?? key + "Id";
 
-    ModelRegistry.updateProperty(modelName, idKey, {
+    updateStashedProperty(target.constructor, idKey, {
       type: PropertyType.Reference,
       referenceTo,
       nullable: opts.nullable,
@@ -174,7 +264,7 @@ function defineReference(
       lazy,
     });
 
-    ModelRegistry.registerProperty(modelName, {
+    stashProperty(target.constructor, {
       name: key,
       type: PropertyType.ReferenceModel,
       referenceTo,
@@ -250,7 +340,6 @@ function defineReferenceCollection(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return function (target: any, key: string) {
     const modelName = target.constructor.name;
-    ensureRegistered(modelName, target.constructor);
 
     // Derive the foreign key on the child model. Convention: parentModelName
     // (lowercased first char) + "Id". Override with inverseOf when needed.
@@ -258,7 +347,7 @@ function defineReferenceCollection(
       opts.inverseOf ??
       modelName.charAt(0).toLowerCase() + modelName.slice(1) + "Id";
 
-    ModelRegistry.registerProperty(modelName, {
+    stashProperty(target.constructor, {
       name: key,
       type: PropertyType.ReferenceCollection,
       referenceTo,
@@ -306,8 +395,7 @@ export function BackReference(referenceTo: string, inverseOf: string) {
   // Legacy decorator target — no better type exists for prototype manipulation
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return function (target: any, key: string) {
-    ensureRegistered(target.constructor.name, target.constructor);
-    ModelRegistry.registerProperty(target.constructor.name, {
+    stashProperty(target.constructor, {
       name: key,
       type: PropertyType.BackReference,
       referenceTo,
@@ -332,8 +420,7 @@ export function ReferenceArray(referenceTo: string) {
   // Legacy decorator target — no better type exists for prototype manipulation
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return function (target: any, key: string) {
-    ensureRegistered(target.constructor.name, target.constructor);
-    ModelRegistry.registerProperty(target.constructor.name, {
+    stashProperty(target.constructor, {
       name: key,
       type: PropertyType.ReferenceArray,
       referenceTo,
@@ -371,10 +458,7 @@ function defineOwnedCollection(
   // Legacy decorator target — no better type exists for prototype manipulation
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return function (target: any, key: string) {
-    const modelName = target.constructor.name;
-    ensureRegistered(modelName, target.constructor);
-
-    ModelRegistry.registerProperty(modelName, {
+    stashProperty(target.constructor, {
       name: key,
       type: PropertyType.OwnedCollection,
       referenceTo,
@@ -413,13 +497,11 @@ export function LazyOwnedCollection(
 // Legacy decorator target — no better type exists for prototype manipulation
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function Action(target: any, key: string, _d: PropertyDescriptor) {
-  ensureRegistered(target.constructor.name, target.constructor);
-  ModelRegistry.registerAction(target.constructor.name, key);
+  stashAction(target.constructor, key);
 }
 
 // Legacy decorator target — no better type exists for prototype manipulation
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function Computed(target: any, key: string, _d: PropertyDescriptor) {
-  ensureRegistered(target.constructor.name, target.constructor);
-  ModelRegistry.registerComputed(target.constructor.name, key);
+  stashComputed(target.constructor, key);
 }
