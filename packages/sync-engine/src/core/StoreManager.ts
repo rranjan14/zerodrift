@@ -1413,6 +1413,9 @@ export class StoreManager {
           await this.database.writeModels(modelName, serverRecords);
         }
       }
+      // Empty result still expresses "we asked for this model" — mark it
+      // loaded so the SSE catchup URL includes it and future inserts arrive.
+      this.database.markModelLoaded(modelName);
       // Mark loaded before the IDB read so SSE inserts arriving during
       // that read are hydrated directly rather than waiting for next access.
       // The persistent record is set later via markPartialIndexLoaded.
@@ -1752,6 +1755,9 @@ export class StoreManager {
           record = await this.database.readModel(modelName, id);
         }
       }
+      // Empty result still expresses "we asked for this model" — mark it as
+      // loaded so the SSE catchup URL includes it and future inserts arrive.
+      this.database.markModelLoaded(modelName);
       this.loadedIds.add(idKey);
     }
 

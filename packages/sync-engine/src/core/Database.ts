@@ -223,6 +223,12 @@ export interface StorageAdapter {
    * unsubscribe function. Per-row deletes don't fire — only first writes
    * to a model and full clears do. */
   onLoadedModelsChange(cb: () => void): () => void;
+  /** Mark a model as loaded even when no rows were written — e.g.
+   * `loadCollection` returned an empty server response, which still
+   * expresses "we want SSE deltas for this model". `writeModels` already
+   * covers the non-empty case; this is the path for empty-but-successful
+   * fetches. */
+  markModelLoaded(modelName: string): void;
   writeModels(
     modelName: string,
     records: Record<string, unknown>[],
@@ -333,6 +339,10 @@ export class Database implements StorageAdapter {
 
   onLoadedModelsChange(cb: () => void): () => void {
     return this.loadedTracker.onChange(cb);
+  }
+
+  markModelLoaded(modelName: string): void {
+    this.loadedTracker.markLoaded(modelName);
   }
 
   constructor(workspaceId: string) {

@@ -49,6 +49,28 @@ describe("Persistent partial-index coverage", () => {
     });
   });
 
+  it("marks the model loaded even when loadCollection returns empty", async () => {
+    // Without this, the SSE catchup URL would omit the model and future
+    // server-side inserts for it would get filtered out.
+    const adapter = new MemoryAdapter();
+    const fetcher = vi.fn().mockResolvedValue([]);
+    manager = new StoreManager({
+      workspaceId: crypto.randomUUID(),
+      bootstrapFetcher: vi.fn().mockResolvedValue({
+        lastSyncId: 0,
+        subscribedSyncGroups: [],
+        models: {},
+      }),
+      onDemandFetcher: fetcher,
+      storageAdapter: adapter,
+    });
+    await manager.bootstrap();
+
+    expect([...adapter.loadedModels]).not.toContain("TestActivity");
+    await manager.loadCollection("TestActivity", "taskId", "t-empty");
+    expect([...adapter.loadedModels]).toContain("TestActivity");
+  });
+
   it("rebuilds the in-memory cache from the adapter on bootstrap", async () => {
     const adapter = new MemoryAdapter();
     await adapter.recordPartialIndex("TestActivity", "taskId", "t1", 0);

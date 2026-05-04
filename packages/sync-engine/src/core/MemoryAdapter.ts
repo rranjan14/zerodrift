@@ -48,6 +48,10 @@ export class MemoryAdapter implements StorageAdapter {
     return this.loadedTracker.onChange(cb);
   }
 
+  markModelLoaded(modelName: string): void {
+    this.loadedTracker.markLoaded(modelName);
+  }
+
   async connect(): Promise<void> {
     this.connected = true;
     this.migrationClearedModels = false;
