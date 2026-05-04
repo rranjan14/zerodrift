@@ -119,6 +119,24 @@ class ModelRegistryImpl {
     return out;
   }
 
+  /** Names of models that pre-subscribe to SSE deltas regardless of whether
+   * any rows have been loaded locally — Instant (always fully loaded) and
+   * Ephemeral (pool-only, fed by SSE). The catchup URL unions this with the
+   * adapter's `loadedModels` so an Instant model the server happens to have
+   * zero rows for in this workspace still receives future inserts. */
+  alwaysSubscribedModelNames(): string[] {
+    const out: string[] = [];
+    for (const meta of this.models.values()) {
+      if (
+        meta.loadStrategy === LoadStrategy.Instant ||
+        meta.loadStrategy === LoadStrategy.Ephemeral
+      ) {
+        out.push(meta.name);
+      }
+    }
+    return out;
+  }
+
   private coveringPathsCache = new Map<string, CoveringPath[]>();
 
   /**

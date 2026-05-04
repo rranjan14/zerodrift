@@ -161,14 +161,29 @@ describe("SSE URL onlyModels param", () => {
     });
     conn.connect();
 
-    expect(calls[0]).toContain(
-      `onlyModels=${encodeURIComponent("TestActivity,TestComment,TestProject")}`,
-    );
+    // The URL is the union of always-subscribed (Instant + Ephemeral) plus
+    // loadedModels. Verify the three names we wrote appear in alphabetical
+    // order regardless of insertion order.
+    const url = calls[0];
+    const param = url.match(/onlyModels=([^&]+)/)?.[1] ?? "";
+    const names = decodeURIComponent(param).split(",");
+    const a = names.indexOf("TestActivity");
+    const c = names.indexOf("TestComment");
+    const p = names.indexOf("TestProject");
+    expect(a).toBeGreaterThan(-1);
+    expect(c).toBeGreaterThan(-1);
+    expect(p).toBeGreaterThan(-1);
+    expect(a).toBeLessThan(c);
+    expect(c).toBeLessThan(p);
 
     conn.disconnect();
   });
 
-  it("omits the onlyModels param when loadedModels is empty", async () => {
+  it("includes Instant + Ephemeral models even when no records have been written", async () => {
+    // An Instant model the server has zero rows for in this workspace would
+    // otherwise be omitted from the catchup URL (writeModels never fired with
+    // records, so it's not in loadedModels). The server would filter future
+    // inserts for it. The fix: always-subscribe Instant + Ephemeral.
     const adapter = new MemoryAdapter();
     await adapter.connect();
     await adapter.saveMeta({
@@ -191,7 +206,12 @@ describe("SSE URL onlyModels param", () => {
     });
     conn.connect();
 
-    expect(calls[0]).not.toContain("onlyModels");
+    // TestTask is Instant; TestMetric is Ephemeral. Both should be present
+    // even though we never wrote any rows for them.
+    expect(calls[0]).toMatch(/onlyModels=[^&]*TestTask/);
+    expect(calls[0]).toMatch(/onlyModels=[^&]*TestMetric/);
+    // TestActivity is Partial — NOT pre-subscribed, no rows written.
+    expect(calls[0]).not.toMatch(/onlyModels=[^&]*TestActivity/);
 
     conn.disconnect();
   });

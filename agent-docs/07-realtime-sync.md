@@ -10,11 +10,15 @@ SSE is a long-lived HTTP connection where the server pushes line-delimited text 
 
 ```typescript
 connect() {
-  const loaded = [...db.loadedModels].sort();          // models with rows locally
+  // Always-subscribed (Instant + Ephemeral) ∪ models the adapter has rows for.
+  const subscribed = [...new Set([
+    ...ModelRegistry.alwaysSubscribedModelNames(),
+    ...db.loadedModels,
+  ])].sort();
   const url = `${baseUrl}/stream?lastSyncId=${meta.lastSyncId}`
               + `&syncGroups=${meta.subscribedSyncGroups.join(",")}`
-              + (loaded.length > 0
-                  ? `&onlyModels=${encodeURIComponent(loaded.join(","))}`
+              + (subscribed.length > 0
+                  ? `&onlyModels=${encodeURIComponent(subscribed.join(","))}`
                   : "");
 
   this.eventSource = new EventSource(url);
@@ -37,7 +41,7 @@ Three things worth noting:
 
 2. **Manual reconnect on error.** The browser's built-in SSE reconnect reuses the original URL — stale `lastSyncId`. The engine closes and re-opens with a fresh URL read from `__meta`, which has the latest `lastSyncId` from the most recently processed packet.
 
-3. **`onlyModels` filter.** The `StorageAdapter` tracks which models have at least one row locally — seeded on `connect()` and grown by `writeModels` / `clearModelStore`. The catchup URL sends that set so the server skips deltas (catchup *and* live stream) for models the client never touched. When the set transitions mid-session (first `loadCollection` for a Partial model, or a schema-migration clear), `StoreManager` debounces a reconnect via `setTimeout(0)` so consecutive awaited writes coalesce into one round-trip. If the set is empty, the param is omitted and the server sends everything.
+3. **`onlyModels` filter.** The `StorageAdapter` tracks which models have at least one row locally — seeded on `connect()` and grown by `writeModels` / `clearModelStore`. The catchup URL sends the union of that set with `ModelRegistry.alwaysSubscribedModelNames()` (Instant + Ephemeral, which pre-subscribe even when the workspace happens to have zero rows for them) so the server skips deltas (catchup *and* live stream) only for models the client neither pre-subscribes to nor has touched. When the set transitions mid-session (first `loadCollection` for a Partial model, or a schema-migration clear), `StoreManager` debounces a reconnect via `setTimeout(0)` so consecutive awaited writes coalesce into one round-trip. If both sets are empty, the param is omitted and the server sends everything.
 
 ## Delta Packets
 
