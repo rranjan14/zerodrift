@@ -1709,7 +1709,10 @@ export class StoreManager {
   }
 
   /** Load multiple models by ID (for OwnedCollection resolution). */
-  async loadByIds(modelName: string, ids: string[]): Promise<BaseModel[]> {
+  async loadByIds<T extends BaseModel = BaseModel>(
+    modelName: string,
+    ids: string[],
+  ): Promise<T[]> {
     if (ids.length === 0) {
       return [];
     }
@@ -1762,6 +1765,10 @@ export class StoreManager {
                 this.objectPool.hydrateAndPut(modelName, meta, record);
               }
             }
+            // Empty result still expresses "we asked for this model" — mark
+            // it loaded so the SSE catchup URL includes it and future
+            // inserts arrive. Mirrors the same call in `loadOne`.
+            this.database.markModelLoaded(modelName);
             for (const id of unloaded) {
               this.loadedIds.add(StoreManager.modelIdKey(modelName, id));
             }
@@ -1775,8 +1782,8 @@ export class StoreManager {
     }
 
     return ids
-      .map((id) => this.objectPool.getById(modelName, id))
-      .filter((m): m is BaseModel => m != null);
+      .map((id) => this.objectPool.getById<T>(modelName, id))
+      .filter((m): m is T => m != null);
   }
 
   /** Load a single model by ID (for partial/lazy models not yet in memory). */
@@ -1840,6 +1847,16 @@ export class StoreManager {
     id: string,
   ): Promise<T | null> {
     return this.loadOne<T>(modelName, id);
+  }
+
+  /** Pool-first bulk-by-ids lookup. Coalesces missing ids into a single
+   * `onDemandBatchFetcher` call when configured (one request instead of
+   * N). Alias of `loadByIds`. */
+  getOrLoadByIds<T extends BaseModel = BaseModel>(
+    modelName: string,
+    ids: string[],
+  ): Promise<T[]> {
+    return this.loadByIds<T>(modelName, ids);
   }
 
   /** Pool-first collection lookup by indexed FK. Alias of `loadCollection`. */

@@ -52,6 +52,43 @@ describe("StoreManager.getOrLoad family", () => {
     expect(note?.content).toBe("hello");
   });
 
+  it("getOrLoadByIds is generic and bulk-fetches missing ids in one call", async () => {
+    // Verifies the bulk path: pool-first, IDB next, then a single
+    // `onDemandBatchFetcher` call for the still-missing subset (one
+    // server request instead of N).
+    const adapter = new MemoryAdapter();
+    const batchFetcher = vi
+      .fn()
+      .mockResolvedValue([
+        { id: "n1", content: "one", taskId: "t1" },
+        { id: "n2", content: "two", taskId: "t1" },
+        { id: "n3", content: "three", taskId: "t1" },
+      ]);
+    manager = new StoreManager({
+      workspaceId: crypto.randomUUID(),
+      bootstrapFetcher: vi.fn().mockResolvedValue({
+        lastSyncId: 0,
+        subscribedSyncGroups: [],
+        models: {},
+      }),
+      onDemandBatchFetcher: batchFetcher,
+      storageAdapter: adapter,
+    });
+    await manager.bootstrap();
+
+    const notes = await manager.getOrLoadByIds<TestNote>("TestNote", [
+      "n1",
+      "n2",
+      "n3",
+    ]);
+    expect(notes.map((n) => n.id).sort()).toEqual(["n1", "n2", "n3"]);
+    expect(batchFetcher).toHaveBeenCalledTimes(1);
+    expect(batchFetcher.mock.calls[0]).toEqual([
+      "TestNote",
+      ["n1", "n2", "n3"],
+    ]);
+  });
+
   it("getOrLoadCollection is generic and aliases loadCollection", async () => {
     const adapter = new MemoryAdapter();
     const fetcher = vi

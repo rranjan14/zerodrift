@@ -223,11 +223,16 @@ issue.watch((m) => m.status === "done", (isDone) => { /* ... */ });
 
 ### Pool-first reads — the get-or-load family
 
-Three symmetric APIs, all generic over `T extends BaseModel`. Each checks the pool first, then IDB, then the configured fetcher:
+Four symmetric APIs, all generic over `T extends BaseModel`. Each checks the pool first, then IDB, then the configured fetcher:
 
 ```ts
 const driver = await sm.getOrLoadById<DriverModel>("DriverModel", id);
 //    ^? DriverModel | null
+
+// Bulk-by-ids — coalesces missing ids into a single onDemandBatchFetcher
+// call (one server request instead of N).
+const drivers = await sm.getOrLoadByIds<DriverModel>("DriverModel", ids);
+//    ^? DriverModel[]
 
 const comments = await sm.getOrLoadCollection<Comment>("Comment", "issueId", issueId);
 //    ^? Comment[]
@@ -235,7 +240,7 @@ const comments = await sm.getOrLoadCollection<Comment>("Comment", "issueId", iss
 // Load every instance of a model — Lazy / Partial models trigger a Full
 // bootstrap fetch on first call; coverage is cached so subsequent calls
 // hit the pool directly.
-const drivers = await sm.getOrLoadAll<DriverModel>("DriverModel");
+const allDrivers = await sm.getOrLoadAll<DriverModel>("DriverModel");
 
 // Optional sync-group scoping — fetches only the drivers in those groups.
 const teamADrivers = await sm.getOrLoadAll<DriverModel>("DriverModel", {
@@ -243,7 +248,7 @@ const teamADrivers = await sm.getOrLoadAll<DriverModel>("DriverModel", {
 });
 ```
 
-`getOrLoadById` / `getOrLoadCollection` are aliases of the older `loadOne` / `loadCollection` — both shapes ship for backwards compatibility. `getOrLoadAll` is new; per-strategy: Instant + Ephemeral return the pool snapshot directly (already fully resident); Lazy / Partial / ExplicitlyRequested fetch from the server; Local reads from IDB. Coverage is tracked under a reserved `"*"` sentinel key in the partial-index store, scoped per `syncGroups` set so different scopes are cached independently.
+`getOrLoadById` / `getOrLoadByIds` / `getOrLoadCollection` are aliases of the older `loadOne` / `loadByIds` / `loadCollection` — both shapes ship for backwards compatibility. `getOrLoadAll` is new; per-strategy: Instant + Ephemeral return the pool snapshot directly (already fully resident); Lazy / Partial / ExplicitlyRequested fetch from the server; Local reads from IDB. Coverage is tracked under a reserved `"*"` sentinel key in the partial-index store, scoped per `syncGroups` set so different scopes are cached independently.
 
 ### Refreshing stale data
 
