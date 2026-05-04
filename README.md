@@ -221,6 +221,30 @@ issue.watch((m) => m.priority, (next, prev) => { /* ... */ });
 issue.watch((m) => m.status === "done", (isDone) => { /* ... */ });
 ```
 
+### Pool-first reads — the get-or-load family
+
+Three symmetric APIs, all generic over `T extends BaseModel`. Each checks the pool first, then IDB, then the configured fetcher:
+
+```ts
+const driver = await sm.getOrLoadById<DriverModel>("DriverModel", id);
+//    ^? DriverModel | null
+
+const comments = await sm.getOrLoadCollection<Comment>("Comment", "issueId", issueId);
+//    ^? Comment[]
+
+// Load every instance of a model — Lazy / Partial models trigger a Full
+// bootstrap fetch on first call; coverage is cached so subsequent calls
+// hit the pool directly.
+const drivers = await sm.getOrLoadAll<DriverModel>("DriverModel");
+
+// Optional sync-group scoping — fetches only the drivers in those groups.
+const teamADrivers = await sm.getOrLoadAll<DriverModel>("DriverModel", {
+  syncGroups: ["team-A"],
+});
+```
+
+`getOrLoadById` / `getOrLoadCollection` are aliases of the older `loadOne` / `loadCollection` — both shapes ship for backwards compatibility. `getOrLoadAll` is new; per-strategy: Instant + Ephemeral return the pool snapshot directly (already fully resident); Lazy / Partial / ExplicitlyRequested fetch from the server; Local reads from IDB. Coverage is tracked under a reserved `"*"` sentinel key in the partial-index store, scoped per `syncGroups` set so different scopes are cached independently.
+
 ### Refreshing stale data
 
 When a long-lived agent reconnects after a stream gap, three APIs re-fetch from the server while preserving object identity (existing references see updated values, not new objects):

@@ -671,6 +671,34 @@ describe("SyncConnection", () => {
 
       expect(pool.getById("TestActivity", "act-1")).toBeUndefined();
     });
+
+    it("hydrates a Partial model insert when the model is `*`-fully-loaded", async () => {
+      // `getOrLoadAll(TestActivity)` records `*`-coverage. Per-FK
+      // `isCollectionLoaded` doesn't see that, so without the
+      // `isModelFullyLoaded` callback the new comment would land in IDB
+      // only — observers via `useModels(TestActivity)` would miss it.
+      const fullyLoaded = new Set<string>(["TestActivity"]);
+      const connWithFullCheck = makeSyncConnection({
+        db,
+        pool,
+        queue,
+        isCollectionLoaded: () => false, // no per-FK coverage at all
+        isModelFullyLoaded: (m) => fullyLoaded.has(m),
+      });
+      await process(connWithFullCheck, {
+        syncId: 1,
+        syncActions: [
+          {
+            action: "I",
+            modelName: "TestActivity",
+            modelId: "act-1",
+            data: { taskId: "t1", text: "hello" },
+          },
+        ],
+      });
+      expect(pool.getById("TestActivity", "act-1")).toBeDefined();
+      connWithFullCheck.disconnect();
+    });
   });
 
   // ── transform ─────────────────────────────────────────────────────────────

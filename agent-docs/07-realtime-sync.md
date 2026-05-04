@@ -15,10 +15,13 @@ connect() {
     ...ModelRegistry.alwaysSubscribedModelNames(),
     ...db.loadedModels,
   ])].sort();
+  // Per-element encode so commas inside any ID/name (e.g. `"a,b"`)
+  // become `%2C` and don't collide with the join separator.
+  const groups = meta.subscribedSyncGroups.map(encodeURIComponent).join(",");
   const url = `${baseUrl}/stream?lastSyncId=${meta.lastSyncId}`
-              + `&syncGroups=${meta.subscribedSyncGroups.join(",")}`
+              + `&syncGroups=${groups}`
               + (subscribed.length > 0
-                  ? `&onlyModels=${encodeURIComponent(subscribed.join(","))}`
+                  ? `&onlyModels=${subscribed.map(encodeURIComponent).join(",")}`
                   : "");
 
   this.eventSource = new EventSource(url);

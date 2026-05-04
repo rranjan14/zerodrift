@@ -114,8 +114,11 @@ export class ObjectPool {
 
   // ── Core operations (notify on mutation) ──────────────────────────────────
 
-  getById(modelName: string, id: string): BaseModel | undefined {
-    return this.pool.get(modelName)?.get(id);
+  getById<T extends BaseModel = BaseModel>(
+    modelName: string,
+    id: string,
+  ): T | undefined {
+    return this.pool.get(modelName)?.get(id) as T | undefined;
   }
 
   /** Store a model instance. Notifies subscribers. */
@@ -157,14 +160,14 @@ export class ObjectPool {
     this.notify(modelName);
   }
 
-  getAll(modelName: string): BaseModel[] {
+  getAll<T extends BaseModel = BaseModel>(modelName: string): T[] {
     let snapshot = this.snapshotCache.get(modelName);
     if (snapshot === undefined) {
       const bucket = this.pool.get(modelName);
       snapshot = bucket != null ? [...bucket.values()] : [];
       this.snapshotCache.set(modelName, snapshot);
     }
-    return snapshot;
+    return snapshot as T[];
   }
 
   get size(): number {

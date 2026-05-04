@@ -153,7 +153,10 @@ export interface PropertyChange {
 
 /** Object pool interface as seen from BaseModel. Avoids importing ObjectPool directly. */
 export interface IObjectPool {
-  getById(modelName: string, id: string): BaseModel | undefined;
+  getById<T extends BaseModel = BaseModel>(
+    modelName: string,
+    id: string,
+  ): T | undefined;
   put(modelName: string, instance: BaseModel): void;
   /**
    * Notify the pool that a child's foreign-key property changed so it can

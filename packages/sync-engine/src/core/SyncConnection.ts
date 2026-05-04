@@ -49,6 +49,17 @@ const SYNC_ACTION_PRUNE_MARGIN = 10_000;
  * readwrite transaction per packet is wasteful when nothing matches. */
 const SYNC_ACTION_PRUNE_STRIDE = 1_000;
 
+/**
+ * Encode each element then comma-join — the right shape for a list-of-
+ * strings inside a URL query parameter or a stable cache key. Commas
+ * inside an element become `%2C`, leaving the join-comma unambiguous.
+ * Encode-after-join would silently collapse `["a,b"]` and `["a", "b"]`
+ * into the same string.
+ */
+export function encodeCsvList(parts: ReadonlyArray<string>): string {
+  return parts.map(encodeURIComponent).join(",");
+}
+
 export interface SyncAction {
   modelName: string;
   modelId: string;
@@ -80,6 +91,22 @@ export type SyncMessageTransform = (
   raw: unknown,
 ) => DeltaPacket | null | undefined;
 
+/** Optional construction args for `SyncConnection`. The four required
+ * collaborators (url, database, pool, queue) stay positional. */
+export interface SyncConnectionOptions {
+  onPacket?: (p: DeltaPacket) => void;
+  onSyncGroupsChanged?: SyncGroupChangeHandler;
+  isCollectionLoaded?: (
+    modelName: string,
+    indexKey: string,
+    value: string,
+  ) => boolean;
+  sseClientFactory?: SSEClientFactory;
+  transform?: SyncMessageTransform;
+  reportError?: SSEErrorReporter;
+  isModelFullyLoaded?: (modelName: string) => boolean;
+}
+
 export class SyncConnection extends BaseSSEConnection {
   // Serializes packet processing to prevent interleaved async mutations.
   private packetQueue: DeltaPacket[] = [];
@@ -89,29 +116,39 @@ export class SyncConnection extends BaseSSEConnection {
    * readwrite transaction is wasteful when nothing matches. */
   private lastPrunedSyncId = 0;
 
+  private onPacket?: (p: DeltaPacket) => void;
+  private onSyncGroupsChanged?: SyncGroupChangeHandler;
+  private isCollectionLoaded?: (
+    modelName: string,
+    indexKey: string,
+    value: string,
+  ) => boolean;
+  private transform?: SyncMessageTransform;
+  /** True when the adopter called `getOrLoadAll(modelName, ...)` (any
+   * scope) since the last bootstrap. SSE inserts for fully-loaded models
+   * always land in the pool — bypassing the per-FK `isCollectionLoaded`
+   * gate, which doesn't see `getOrLoadAll`'s sentinel coverage. */
+  private isModelFullyLoaded?: (modelName: string) => boolean;
+
   constructor(
     url: string,
     private database: StorageAdapter,
     private pool: ObjectPool,
     private queue: TransactionQueue,
-    private onPacket?: (p: DeltaPacket) => void,
-    private onSyncGroupsChanged?: SyncGroupChangeHandler,
-    private isCollectionLoaded?: (
-      modelName: string,
-      indexKey: string,
-      value: string,
-    ) => boolean,
-    sseClientFactory?: SSEClientFactory,
-    private transform?: SyncMessageTransform,
-    reportError?: SSEErrorReporter,
+    opts: SyncConnectionOptions = {},
   ) {
-    super(url, sseClientFactory, reportError);
+    super(url, opts.sseClientFactory, opts.reportError);
+    this.onPacket = opts.onPacket;
+    this.onSyncGroupsChanged = opts.onSyncGroupsChanged;
+    this.isCollectionLoaded = opts.isCollectionLoaded;
+    this.transform = opts.transform;
+    this.isModelFullyLoaded = opts.isModelFullyLoaded;
   }
 
   protected buildUrl(): string {
     const meta = this.database.currentMeta;
     const lastSyncId = meta?.lastSyncId ?? 0;
-    const syncGroups = (meta?.subscribedSyncGroups ?? []).join(",");
+    const syncGroups = encodeCsvList(meta?.subscribedSyncGroups ?? []);
     // Tell the server which models we're subscribed to (catchup + live
     // stream; absent → no filter). Union of always-subscribed (Instant +
     // Ephemeral, see ModelRegistry) with adapter-tracked loadedModels.
@@ -124,10 +161,8 @@ export class SyncConnection extends BaseSSEConnection {
       ]),
     ].sort();
     const onlyModels =
-      subscribed.length > 0
-        ? `&onlyModels=${encodeURIComponent(subscribed.join(","))}`
-        : "";
-    return `${this.url}?lastSyncId=${lastSyncId}&syncGroups=${encodeURIComponent(syncGroups)}${onlyModels}`;
+      subscribed.length > 0 ? `&onlyModels=${encodeCsvList(subscribed)}` : "";
+    return `${this.url}?lastSyncId=${lastSyncId}&syncGroups=${syncGroups}${onlyModels}`;
   }
 
   protected onMessage(data: string): void {
@@ -361,6 +396,14 @@ export class SyncConnection extends BaseSSEConnection {
 
     // Instant models always go into the pool — they were bootstrapped in full
     if (modelMeta.loadStrategy === LoadStrategy.Instant) {
+      return true;
+    }
+
+    // `getOrLoadAll` recorded "we want every instance of this model" via a
+    // sentinel coverage entry. SSE inserts must land in the pool too,
+    // otherwise observers reading via `useModels(modelName)` miss the row
+    // until the next explicit `getOrLoadAll` call refreshes from IDB.
+    if (this.isModelFullyLoaded?.(modelMeta.name) === true) {
       return true;
     }
 

@@ -43,6 +43,7 @@ import {
 import type { UndoableAction } from "./Transaction";
 import {
   SyncConnection,
+  encodeCsvList,
   type DeltaPacket,
   type SSEClientFactory,
   type SyncMessageTransform,
@@ -324,6 +325,13 @@ export interface StoreManagerConfig {
   undoableActions?: UndoableActionHandlers;
 }
 
+/**
+ * Reserved `indexKey` segment used by `getOrLoadAll` to record whole-table
+ * coverage in `partialIndexCoverage` alongside real field-keyed entries.
+ * Real models must not declare a field named `"*"`.
+ */
+const ALL_INDEX_KEY_SENTINEL = "*";
+
 export class StoreManager {
   readonly objectPool: ObjectPool;
   readonly database: StorageAdapter;
@@ -351,6 +359,18 @@ export class StoreManager {
    */
   private partialIndexCoverage = new Map<string, PartialIndexEntry>();
   private loadedIds = new Set<string>();
+  /** Models whose IDB rows have been hydrated into the pool at least once
+   * this session. `getOrLoadAll`'s cache-hit path skips a full IDB scan
+   * when a model is in this set — pool stays current via SSE
+   * (`shouldHydrateInsert` honors `*`-coverage, see `isModelFullyLoaded`),
+   * so a fresh IDB read would just rediscover what pool already holds.
+   * Cleared whenever `objectPool.clear()` is called. */
+  private poolSyncedFromIDB = new Set<string>();
+  /** Models that have at least one `*`-coverage entry in
+   * `partialIndexCoverage` (any scope). Mirror of those entries — kept so
+   * `isModelFullyLoaded` is O(1) on the SSE insert hot path. Updated
+   * wherever `partialIndexCoverage` mutates a `"*"` row. */
+  private fullyLoadedModels = new Set<string>();
   /** Wired only when `onDemandIndexBatchFetcher` is configured. */
   private indexBatchLoader: BatchModelLoader | null = null;
 
@@ -471,6 +491,9 @@ export class StoreManager {
             ),
             entry,
           );
+          if (entry.indexKey === ALL_INDEX_KEY_SENTINEL) {
+            this.fullyLoadedModels.add(entry.modelName);
+          }
         }
       } catch (err) {
         this.emitError(err, { kind: "deferredBootstrap", modelNames: [] });
@@ -511,15 +534,18 @@ export class StoreManager {
           this.database,
           this.objectPool,
           this.transactionQueue,
-          this.config.onDeltaPacket,
-          async (added, removed) => {
-            await this.handleSyncGroupsAdded(added);
-            await this.handleSyncGroupsRemoved(removed);
+          {
+            onPacket: this.config.onDeltaPacket,
+            onSyncGroupsChanged: async (added, removed) => {
+              await this.handleSyncGroupsAdded(added);
+              await this.handleSyncGroupsRemoved(removed);
+            },
+            isCollectionLoaded: this.isCollectionLoaded.bind(this),
+            sseClientFactory: sseFactory,
+            transform: this.config.syncTransform,
+            reportError: sseErrorReporter,
+            isModelFullyLoaded: this.isModelFullyLoaded.bind(this),
           },
-          this.isCollectionLoaded.bind(this),
-          sseFactory,
-          this.config.syncTransform,
-          sseErrorReporter,
         );
         this.syncConnection.connect();
         // Reconnect SSE when the loaded-models set changes — server uses
@@ -751,7 +777,7 @@ export class StoreManager {
       existing.backendDatabaseVersion !== undefined &&
       res.backendDatabaseVersion !== existing.backendDatabaseVersion
     ) {
-      this.objectPool.clear();
+      this.resetPoolState();
       await this.fullBootstrap();
       return;
     }
@@ -1087,7 +1113,7 @@ export class StoreManager {
       dbMeta.backendDatabaseVersion !== undefined &&
       res.backendDatabaseVersion !== dbMeta.backendDatabaseVersion
     ) {
-      this.objectPool.clear();
+      this.resetPoolState();
       await this.fullBootstrap();
       return { schemaMismatch: true };
     }
@@ -1338,6 +1364,12 @@ export class StoreManager {
 
   // ── Lazy loading ──────────────────────────────────────────────────────────
 
+  /**
+   * Builds the `partialIndexCoverage` cache key. The `indexKey` segment is
+   * usually a real model field name, but the value `ALL_INDEX_KEY_SENTINEL`
+   * (`"*"`) is reserved for `getOrLoadAll` whole-table coverage and must
+   * not collide with any real field name.
+   */
   private static collectionKey(
     modelName: string,
     indexKey: string,
@@ -1459,6 +1491,15 @@ export class StoreManager {
     );
   }
 
+  /** True when `getOrLoadAll(modelName, ...)` has been called for any scope
+   * — i.e., the adopter expressed "we want every instance of this model."
+   * SSE inserts honor this so observers reading via `useModels(modelName)`
+   * see live additions instead of having to re-call `getOrLoadAll`. O(1) —
+   * mirrors `partialIndexCoverage`'s `"*"` rows in `fullyLoadedModels`. */
+  isModelFullyLoaded(modelName: string): boolean {
+    return this.fullyLoadedModels.has(modelName);
+  }
+
   /**
    * Derive-on-read for compound coverage: a direct triple
    * `(modelName, indexKey, value)` is implicitly covered when a previously-
@@ -1529,6 +1570,9 @@ export class StoreManager {
       StoreManager.collectionKey(modelName, indexKey, value),
       { modelName, indexKey, value, firstSyncId },
     );
+    if (indexKey === ALL_INDEX_KEY_SENTINEL) {
+      this.fullyLoadedModels.add(modelName);
+    }
     await this.database.recordPartialIndex(
       modelName,
       indexKey,
@@ -1627,6 +1671,23 @@ export class StoreManager {
     this.partialIndexCoverage.delete(
       StoreManager.collectionKey(modelName, indexKey, value),
     );
+    if (indexKey === ALL_INDEX_KEY_SENTINEL) {
+      // Multiple scopes can coexist for the same model — only flip the
+      // mirror set off when no other `*` entry remains.
+      let stillCovered = false;
+      for (const entry of this.partialIndexCoverage.values()) {
+        if (
+          entry.modelName === modelName &&
+          entry.indexKey === ALL_INDEX_KEY_SENTINEL
+        ) {
+          stillCovered = true;
+          break;
+        }
+      }
+      if (!stillCovered) {
+        this.fullyLoadedModels.delete(modelName);
+      }
+    }
     await this.database.clearPartialIndex(modelName, indexKey, value);
   }
 
@@ -1769,6 +1830,118 @@ export class StoreManager {
     }
 
     return this.objectPool.hydrateAndPut(modelName, meta, record) as T;
+  }
+
+  // ── Get-or-load family ─────────────────────────────────────────────────────
+
+  /** Pool-first single-id lookup. Alias of `loadOne`. */
+  getOrLoadById<T extends BaseModel = BaseModel>(
+    modelName: string,
+    id: string,
+  ): Promise<T | null> {
+    return this.loadOne<T>(modelName, id);
+  }
+
+  /** Pool-first collection lookup by indexed FK. Alias of `loadCollection`. */
+  getOrLoadCollection<T extends BaseModel = BaseModel>(
+    modelName: string,
+    indexKey: string,
+    value: string,
+  ): Promise<T[]> {
+    return this.loadCollection<T>(modelName, indexKey, value);
+  }
+
+  /**
+   * Load every instance of `modelName`, optionally scoped to a set of sync
+   * groups. Triggers a Full bootstrap fetch on first call, hydrates the
+   * results, and records coverage so subsequent same-scope calls short-circuit.
+   *
+   * Per-strategy behavior:
+   *   - Instant / Ephemeral — already fully resident; returns pool snapshot.
+   *   - Local — returns IDB contents (no server hit).
+   *   - Lazy / Partial / ExplicitlyRequested — fetches and hydrates.
+   *
+   * Coverage is tracked in `partialIndexCoverage` under the
+   * `ALL_INDEX_KEY_SENTINEL` reserved indexKey — adopters never see it but it
+   * coexists with real indexKeys, so callers must avoid using "*" themselves.
+   */
+  async getOrLoadAll<T extends BaseModel = BaseModel>(
+    modelName: string,
+    opts: { syncGroups?: string[] } = {},
+  ): Promise<T[]> {
+    const meta = ModelRegistry.getModelMeta(modelName);
+    if (meta == null) {
+      return [];
+    }
+    const { loadStrategy } = meta;
+
+    if (
+      loadStrategy === LoadStrategy.Instant ||
+      loadStrategy === LoadStrategy.Ephemeral
+    ) {
+      return this.objectPool.getAll<T>(modelName);
+    }
+
+    const scope = (opts.syncGroups ?? []).slice().sort();
+    // Per-element encode so commas inside any ID don't collide with the join.
+    const coverageValue = encodeCsvList(scope);
+    const coverageKey = StoreManager.collectionKey(
+      modelName,
+      ALL_INDEX_KEY_SENTINEL,
+      coverageValue,
+    );
+
+    const isLocal = loadStrategy === LoadStrategy.Local;
+    const alreadyCovered =
+      isLocal || this.partialIndexCoverage.has(coverageKey);
+
+    // Fast path: pool was already hydrated this session AND coverage is in
+    // place. SSE keeps the pool current for `*`-covered models (see
+    // `isModelFullyLoaded` + `shouldHydrateInsert`), so no IDB scan needed.
+    if (alreadyCovered && this.poolSyncedFromIDB.has(modelName)) {
+      return this.objectPool.getAll<T>(modelName);
+    }
+
+    if (!alreadyCovered) {
+      let res: BootstrapResponse;
+      try {
+        res = await this.config.bootstrapFetcher(BootstrapType.Full, {
+          onlyModels: [modelName],
+          syncGroups: scope.length > 0 ? scope : undefined,
+          currentMeta: this.database.currentMeta,
+        });
+      } catch (err) {
+        this.emitError(err, { kind: "syncGroupFetch", groups: scope });
+        throw err;
+      }
+      const records = res.models[modelName] ?? [];
+      if (records.length > 0) {
+        await this.database.writeModels(modelName, records);
+        // `hydrateAndPut` is idempotent — re-hydrates already-pooled
+        // instances in place — so no membership guard is needed.
+        for (const record of records) {
+          this.objectPool.hydrateAndPut(modelName, meta, record);
+        }
+      }
+      this.database.markModelLoaded(modelName);
+      await this.markPartialIndexLoaded(
+        modelName,
+        ALL_INDEX_KEY_SENTINEL,
+        coverageValue,
+      );
+      this.poolSyncedFromIDB.add(modelName);
+      return this.objectPool.getAll<T>(modelName);
+    }
+
+    // First call this session for a covered (or Local) model: hydrate from
+    // IDB so the pool is in sync, then mark synced so the fast path above
+    // catches subsequent calls.
+    const idbRecords = await this.database.readAllModels(modelName);
+    for (const record of idbRecords) {
+      this.objectPool.hydrateAndPut(modelName, meta, record);
+    }
+    this.poolSyncedFromIDB.add(modelName);
+    return this.objectPool.getAll<T>(modelName);
   }
 
   // ── Refresh ──────────────────────────────────────────────────────────────
@@ -1930,6 +2103,19 @@ export class StoreManager {
     };
   }
 
+  /** Drop in-memory pool + the per-session "we hydrated from IDB" mirror.
+   * Used by the schema-mismatch fallback in delta processing and sync-
+   * group fetches: when the server's data shape changes we throw away the
+   * pool and re-bootstrap. The two clears are an invariant pair —
+   * extracting the helper enforces it across both call sites instead of
+   * trusting future authors to remember. `partialIndexCoverage` is NOT
+   * cleared here because the schema-mismatch path keeps coverage entries;
+   * the `fullyLoadedModels` mirror stays consistent with that. */
+  private resetPoolState(): void {
+    this.objectPool.clear();
+    this.poolSyncedFromIDB.clear();
+  }
+
   async teardown() {
     this.stopped = true;
     BaseModel.storeManager = null;
@@ -1952,7 +2138,9 @@ export class StoreManager {
     this.objectPool.clear();
     this.stores.clear();
     this.partialIndexCoverage.clear();
+    this.fullyLoadedModels.clear();
     this.loadedIds.clear();
+    this.poolSyncedFromIDB.clear();
     this.setPhase(BootstrapPhase.Idle);
   }
 

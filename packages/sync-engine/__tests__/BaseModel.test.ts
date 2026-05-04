@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { BaseModel } from "@sync-engine/BaseModel";
+import type { IObjectPool } from "@sync-engine/types";
 import {
   TestTask,
   TestProject,
@@ -415,7 +416,9 @@ describe("BaseModel", () => {
       task.makeModelObservable();
 
       // Simulate pool being wired as the store
-      const fakeStore = makeFakePool({ getById: () => project });
+      const fakeStore = makeFakePool({
+        getById: (() => project) as IObjectPool["getById"],
+      });
       task.store = fakeStore;
 
       expect(task.project).toBe(project);
