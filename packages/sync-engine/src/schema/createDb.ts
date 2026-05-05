@@ -98,15 +98,6 @@ export interface EntityNamespace<
     key: IndexedFieldKeys<S, K>,
     value: string,
   ): Promise<ReadonlyArray<RecordWithExtensions<S, K, Exts>>>;
-  /**
-   * Cache-aware fetch: resolves with the pooled record if it's already
-   * hydrated, otherwise loads from IDB / network and resolves with the
-   * result. Always returns a Promise — for a sync-only pool lookup,
-   * use `findById(id)` first and fall back to this on a miss.
-   */
-  getOrLoad(
-    id: string,
-  ): Promise<RecordWithExtensions<S, K, Exts> | null>;
   /** Hydrate every record of this entity from IDB into the pool. */
   loadAll(): Promise<ReadonlyArray<RecordWithExtensions<S, K, Exts>>>;
   /** Force a network re-fetch of the listed ids. */
@@ -385,16 +376,6 @@ function createEntityNamespace(
     async loadByIndex(key, value) {
       const list = await sm.loadCollection(registryName, key, value);
       return recordsFrom(list);
-    },
-    async getOrLoad(id) {
-      // Pool-first: resolve immediately when the record is already hydrated
-      // so the await microtask is the only async cost on cache hits.
-      const cached = sm.objectPool.getById(registryName, id);
-      if (cached != null) {
-        return toRecord(cached);
-      }
-      const model = await sm.loadOne(registryName, id);
-      return model == null ? null : toRecord(model);
     },
     async loadAll() {
       const list = await sm.getOrLoadAll(registryName);

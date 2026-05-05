@@ -402,23 +402,12 @@ describe("createDb — async loaders", () => {
     expect(getOrLoadAll).toHaveBeenCalledWith("DbTeam");
   });
 
-  it("getOrLoad resolves with the pooled record without hitting loadOne", async () => {
+  it("load(id) resolves with the pooled record without re-hitting storage", async () => {
     const team = db.dbTeam.create({ id: "team-cache-hit", name: "cached" });
-    const loadOne = vi.spyOn(sm, "loadOne");
-
-    const result = await db.dbTeam.getOrLoad("team-cache-hit");
-
+    const result = await db.dbTeam.load("team-cache-hit");
+    // StoreManager.loadOne is itself pool-first, so a pooled record returns
+    // the same instance without touching IDB or the network.
     expect(result).toBe(team);
-    expect(loadOne).not.toHaveBeenCalled();
-  });
-
-  it("getOrLoad falls through to loadOne when the record is not in the pool", async () => {
-    const loadOne = vi.spyOn(sm, "loadOne").mockResolvedValue(null);
-
-    const result = await db.dbTeam.getOrLoad("team-cache-miss");
-
-    expect(result).toBeNull();
-    expect(loadOne).toHaveBeenCalledWith("DbTeam", "team-cache-miss");
   });
 });
 
