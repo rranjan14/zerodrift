@@ -160,14 +160,14 @@ describe("schema → decorator FK resolution", () => {
       body: "doomed",
       authorId: "user-cascade",
     });
-    expect(db.coexComment.findById("comment-cascade")).not.toBeNull();
+    expect(db.coexComment.peek("comment-cascade")).not.toBeNull();
 
     // Delete the decorator parent through the StoreManager (bypassing db.*
     // since coexUser is external — the schema typed surface doesn't expose it).
     sm.deleteModel(user);
 
     // onDelete: "cascade" should propagate to the schema-defined comment.
-    expect(db.coexComment.findById("comment-cascade")).toBeNull();
+    expect(db.coexComment.peek("comment-cascade")).toBeNull();
   });
 });
 

@@ -51,16 +51,70 @@ export interface EntityNamespace<
   K extends EntityKey<S>,
   Exts extends readonly ExtensionDescriptor<S>[],
 > {
-  /** Read a record from the in-memory pool by id. */
-  findById(id: string): RecordWithExtensions<S, K, Exts> | null;
-  /** Every record of this entity currently hydrated in the pool. */
-  getAll(): ReadonlyArray<RecordWithExtensions<S, K, Exts>>;
+  // ── Reads ────────────────────────────────────────────────────────────────
+  // The default read flavor is async: `get` resolves with whatever the engine
+  // can supply (pool first, then IDB / network). The `peek` family is the
+  // sync escape hatch that returns the pool snapshot only — for code paths
+  // that genuinely cannot await (render-time reads, synchronous assertions).
+
+  /**
+   * Resolve a single record. Pool-first under the hood, so a hit costs only
+   * a microtask; a miss falls back to IDB and (if configured) the on-demand
+   * fetcher.
+   */
+  get(id: string): Promise<RecordWithExtensions<S, K, Exts> | null>;
+  /** Resolve many records by id. Pool-first per id; missing ones are loaded together. */
+  getByIds(
+    ids: readonly string[],
+  ): Promise<ReadonlyArray<RecordWithExtensions<S, K, Exts>>>;
+  /**
+   * Resolve every record matching `value` on a declared `.indexed()` field.
+   * The `key` is constrained at the type level to fields actually marked
+   * indexed in the schema.
+   *
+   * `value` is `string` because IDB indexes are string-typed; values from
+   * non-string indexed fields (numbers, dates, refIds) need to be stringified
+   * the same way the runtime serializes them. Future versions may type the
+   * value against the field's TS type once StoreManager.loadCollection
+   * accepts non-string values.
+   */
+  getByIndex(
+    key: IndexedFieldKeys<S, K>,
+    value: string,
+  ): Promise<ReadonlyArray<RecordWithExtensions<S, K, Exts>>>;
+  /**
+   * Resolve every record of this entity. Hydrates from IDB on first call,
+   * relies on partial-index coverage and SSE deltas on subsequent calls.
+   */
+  getAll(): Promise<ReadonlyArray<RecordWithExtensions<S, K, Exts>>>;
+
+  /**
+   * Sync pool snapshot for a single record. Returns `null` if the record
+   * isn't currently hydrated — `null` does NOT mean "doesn't exist," it
+   * means "not in this microtask's pool." Use `get(id)` if you want the
+   * engine to fetch.
+   */
+  peek(id: string): RecordWithExtensions<S, K, Exts> | null;
+  /** Sync pool snapshot of every record currently hydrated for this entity. */
+  peekAll(): ReadonlyArray<RecordWithExtensions<S, K, Exts>>;
+  /**
+   * Sync pool filter: every pooled record where `record[key] === value`.
+   * `key` is constrained to fields actually marked `.indexed()` in the
+   * schema, mirroring `getByIndex` — querying non-indexed fields here is
+   * usually a sign you wanted `getByIndex` (which can fall back to IDB).
+   */
+  peekByIndex(
+    key: IndexedFieldKeys<S, K>,
+    value: string,
+  ): ReadonlyArray<RecordWithExtensions<S, K, Exts>>;
+
+  // ── Writes ───────────────────────────────────────────────────────────────
   /** Allocate, hydrate, and enqueue a create transaction. */
   create(input: InferCreateInput<S, K>): RecordWithExtensions<S, K, Exts>;
   /**
    * Apply a partial update to a record already in the pool. Throws if no
    * record with `id` is found — to fetch and update lazy-loaded records,
-   * `await db.<entity>.load(id)` first.
+   * `await db.<entity>.get(id)` first.
    */
   update(id: string, input: InferUpdateInput<S, K>): void;
   /** Delete the record with full cascade / restrict semantics. */
@@ -76,36 +130,22 @@ export interface EntityNamespace<
     records: ReadonlyArray<Partial<InferCreateInput<S, K>>>,
   ): ReadonlyArray<RecordWithExtensions<S, K, Exts>>;
 
-  // ── async loaders ────────────────────────────────────────────────────────
-  /** Fetch one record by id from IDB / the network, hydrating into the pool. */
-  load(id: string): Promise<RecordWithExtensions<S, K, Exts> | null>;
-  /** Fetch many records by id. */
-  loadByIds(
-    ids: readonly string[],
-  ): Promise<ReadonlyArray<RecordWithExtensions<S, K, Exts>>>;
-  /**
-   * Fetch every record matching `value` on a declared `.indexed()` field.
-   * The `key` is constrained at the type level to fields actually marked
-   * indexed in the schema.
-   *
-   * `value` is `string` because IDB indexes are string-typed; values from
-   * non-string indexed fields (numbers, dates, refIds) need to be stringified
-   * the same way the runtime serializes them. Future versions may type the
-   * value against the field's TS type once StoreManager.loadCollection
-   * accepts non-string values.
-   */
-  loadByIndex(
-    key: IndexedFieldKeys<S, K>,
-    value: string,
-  ): Promise<ReadonlyArray<RecordWithExtensions<S, K, Exts>>>;
-  /** Hydrate every record of this entity from IDB into the pool. */
-  loadAll(): Promise<ReadonlyArray<RecordWithExtensions<S, K, Exts>>>;
+  // ── Force-fetch ──────────────────────────────────────────────────────────
   /** Force a network re-fetch of the listed ids. */
   refresh(
     ids: readonly string[],
   ): Promise<ReadonlyArray<RecordWithExtensions<S, K, Exts>>>;
   /** Force a network re-fetch of every record of this entity. */
   refreshAll(): Promise<void>;
+  /**
+   * Force a network re-fetch of every record matching `value` on a declared
+   * `.indexed()` field. Evicts the partial-index coverage cache first so the
+   * next load is guaranteed to hit the server.
+   */
+  refreshByIndex(
+    key: IndexedFieldKeys<S, K>,
+    value: string,
+  ): Promise<ReadonlyArray<RecordWithExtensions<S, K, Exts>>>;
 }
 
 /**
@@ -332,12 +372,31 @@ function createEntityNamespace(
   ): ReadonlyArray<Rec> => list.map(toRecord);
 
   return {
-    findById(id) {
+    peek(id) {
       const model = sm.objectPool.getById(registryName, id);
       return model == null ? null : toRecord(model);
     },
-    getAll() {
+    peekAll() {
       return recordsFrom(sm.objectPool.getAll(registryName));
+    },
+    peekByIndex(key, value) {
+      return recordsFrom(sm.peekByIndex(registryName, key, value));
+    },
+    async get(id) {
+      const model = await sm.loadOne(registryName, id);
+      return model == null ? null : toRecord(model);
+    },
+    async getByIds(ids) {
+      const list = await sm.loadByIds(registryName, [...ids]);
+      return recordsFrom(list);
+    },
+    async getByIndex(key, value) {
+      const list = await sm.loadCollection(registryName, key, value);
+      return recordsFrom(list);
+    },
+    async getAll() {
+      const list = await sm.getOrLoadAll(registryName);
+      return recordsFrom(list);
     },
     create(input) {
       const instance = new Ctor();
@@ -365,28 +424,19 @@ function createEntityNamespace(
       );
       return seeded.map(toRecord);
     },
-    async load(id) {
-      const model = await sm.loadOne(registryName, id);
-      return model == null ? null : toRecord(model);
-    },
-    async loadByIds(ids) {
-      const list = await sm.loadByIds(registryName, [...ids]);
-      return recordsFrom(list);
-    },
-    async loadByIndex(key, value) {
-      const list = await sm.loadCollection(registryName, key, value);
-      return recordsFrom(list);
-    },
-    async loadAll() {
-      const list = await sm.getOrLoadAll(registryName);
-      return recordsFrom(list);
-    },
     async refresh(ids) {
       const list = await sm.refreshModels(registryName, [...ids]);
       return recordsFrom(list);
     },
     async refreshAll() {
       await sm.refreshAllOfModel(registryName);
+    },
+    async refreshByIndex(key, value) {
+      // Delegates to StoreManager.refreshCollection which diffs previous vs
+      // fresh ids — server-removed records leave the pool, surviving
+      // instances are updated in place so held references stay valid.
+      const list = await sm.refreshCollection(registryName, key, value);
+      return recordsFrom(list);
     },
   };
 }

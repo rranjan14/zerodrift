@@ -2009,6 +2009,21 @@ export class StoreManager {
   // ── Refresh ──────────────────────────────────────────────────────────────
 
   /**
+   * Sync filter over the pool for records of `modelName` whose `indexKey`
+   * field matches `value`. Used by the typed `db.<entity>.peekByIndex`
+   * surface and shared with the diff path inside `refreshCollection`.
+   */
+  peekByIndex<T extends BaseModel = BaseModel>(
+    modelName: string,
+    indexKey: string,
+    value: string,
+  ): T[] {
+    return this.objectPool
+      .getAll<T>(modelName)
+      .filter((m) => prop(m, indexKey) === value);
+  }
+
+  /**
    * Re-fetch a collection from the server, replacing stale pool data.
    * Existing instances are updated in-place so references held by
    * components/hooks remain valid. Models the server no longer returns
@@ -2027,10 +2042,7 @@ export class StoreManager {
     const isEphemeral = meta.loadStrategy === LoadStrategy.Ephemeral;
 
     const previousIds = new Set(
-      this.objectPool
-        .getAll(modelName)
-        .filter((m) => prop(m, indexKey) === value)
-        .map((m) => m.id),
+      this.peekByIndex(modelName, indexKey, value).map((m) => m.id),
     );
 
     const serverRecords = await this.config.onDemandFetcher(

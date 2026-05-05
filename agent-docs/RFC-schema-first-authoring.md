@@ -24,7 +24,7 @@ The InstantDB experience (schema as data, typed SDK falls out) is the model.
 These were left as open questions in earlier drafts. Pinning them here so the prototype has a fixed target.
 
 1. **Canonical naming.** Schema entity key → PascalCase registry name (`issue` → `Issue`). `entity({ name: "..." })` overrides. The registry name is what `ModelMeta.name` becomes and what cross-references resolve against.
-2. **Public record identity.** `db.<entity>.findById(id)` returns a typed proxy facade. The implementation is backed by `BaseModel` instances internally for V1 — this avoids rewriting reactivity. The facade may diverge from `BaseModel` later.
+2. **Public record identity.** `db.<entity>.peek(id)` (sync) and `db.<entity>.get(id)` (async) return typed proxy facades. The implementation is backed by `BaseModel` instances internally for V1 — this avoids rewriting reactivity. The facade may diverge from `BaseModel` later.
 3. **`extend(...)` is pure.** It returns an extension descriptor. It does not mutate the schema. Extensions are composed at `createDb({ schema, extensions: [...] })`. Schema-as-data only stays true if `extend` doesn't touch it.
 4. **Compile timing.** `compileSchema` runs inside `createDb`, not at module load. Schema stays inert data until a runtime asks for it. Tests, codegen, and SSR depend on this.
 
@@ -253,7 +253,7 @@ It is solvable — typically with a `this`-style trick (declaring callbacks as m
 If you need a computed that reads another computed, you have two paths:
 
 - Inline: just compute the value directly inside the second function. (`displayName: (issue) => \`${issue.teamId?.slice(0, 4)}-${issue.sortOrder}\``.)
-- Across calls: split into two `extend` calls and rely on the merged record type that `createDb` materializes — at that point all extensions are visible to one another via the proxy returned from `db.<entity>.findById(...)`.
+- Across calls: split into two `extend` calls and rely on the merged record type that `createDb` materializes — at that point all extensions are visible to one another via the proxy returned from `db.<entity>.peek(...)`.
 
 ### Typed client
 
@@ -262,7 +262,7 @@ V1 is namespaced.
 ```typescript
 const db = createDb({ schema, extensions, adapter, sync });
 
-const issue = db.issue.findById("issue-1");
+const issue = db.issue.peek("issue-1");
 issue?.moveToTeam("team-design");
 
 await db.issue.create({
@@ -437,7 +437,7 @@ The runtime, IDB layout, sync protocol, and React/headless APIs do not change du
 
 ## Reactivity surface
 
-Public `db.<entity>.findById(id)` returns a typed proxy. The proxy must behave equivalently to a decorator-defined `BaseModel` instance for reactive consumers:
+Public `db.<entity>.peek(id)` returns a typed proxy. The proxy must behave equivalently to a decorator-defined `BaseModel` instance for reactive consumers:
 
 - Property reads track observable state (works inside `observer()`, `useModel()`, agent `watch()`).
 - Singular relation reads (`issue.team`) track pool identity atoms.
@@ -455,7 +455,13 @@ Build:
 - `compileSchema` → `ModelRegistry`, with the cross-validation invariants enforced
 - `InferEntity`, `InferCreateInput`, `InferUpdateInput`, `InferRecord`
 - `createDb({ schema, extensions, adapter, sync })`
-- `db.<entity>.findById` / `create` / `update` / `delete` / `seed`
+- `db.<entity>` namespace:
+  - **sync pool snapshot**: `peek` / `peekAll` / `peekByIndex`
+  - **async pool-or-fetch**: `get` / `getByIds` / `getByIndex` / `getAll`
+  - **mutations**: `create` / `update` / `delete` / `archive` / `seed`
+  - **force network re-fetch**: `refresh` / `refreshAll` / `refreshByIndex`
+  - **per-record commit**: `save` / `hasUnsavedChanges` / `discardUnsavedChanges`
+- `db` top-level: `batch` / `undo` / `redo` / `undoDepth` / `redoDepth` / `runUndoable`
 - `extend(...)` in both per-entity and whole-schema forms
 - `entity({ external: true, name: "..." })` for coexistence with decorator-registered models
 - `fromZod(zodSchema)` and `entityFromZod(zodObject, opts)` — Zod is an optional peer dependency; the adapter walks Zod's `_zod.def` introspection and maps primitives + `nullable` / `optional` / `default` modifiers, falling through to `s.json<T>()` for structured types
@@ -476,7 +482,7 @@ Each deferred item is independent of the others and of V1. None block the protot
 
 1. Type-only spike: write `defineSchema` / `entity` / `link` / `fields` / `InferEntity` with no runtime, validate that cross-entity inference works (especially `s.refId("team")` constraining against `entities` keys).
 2. Compiler: schema → `ModelRegistry` entries. Generate synthetic constructors. Hash schemaVersion. Run cross-validation.
-3. `createDb` facade over `StoreManager`. Implement `findById` / `create` / `update` / `delete` only.
+3. `createDb` facade over `StoreManager`. Implement `peek` / `create` / `update` / `delete` only.
 4. Extension composition. `extend(...)` returns descriptors; `createDb` merges them into per-entity action/computed sets and wires MobX wrapping.
 5. Worked example + tests against `Team` / `Issue`.
 6. Decorator coexistence test: one schema entity linking to one decorator model.

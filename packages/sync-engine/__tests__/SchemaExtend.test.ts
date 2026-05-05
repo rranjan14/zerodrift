@@ -136,7 +136,7 @@ describe("extend — computed", () => {
     });
     expect(issue.identifier).toBe("team-7");
 
-    const fromPool = db.extIssue.findById("issue-1");
+    const fromPool = db.extIssue.peek("issue-1");
     expect(fromPool?.identifier).toBe("team-7");
   });
 
@@ -264,7 +264,7 @@ describe("extend — composing multiple descriptors", () => {
       extensions: [replacement, teamBehavior] as const,
     });
 
-    const reboundIssue = rebound.extIssue.findById("issue-rebind");
+    const reboundIssue = rebound.extIssue.peek("issue-rebind");
     expect(reboundIssue?.identifier).toBe("replacement:2");
 
     reboundIssue?.moveToTeam("team-next");

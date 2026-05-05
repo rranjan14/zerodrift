@@ -68,27 +68,27 @@ afterEach(async () => {
 
 describe("createDb — shape", () => {
   it("exposes one namespace per entity key", () => {
-    expect(typeof db.dbTeam.findById).toBe("function");
+    expect(typeof db.dbTeam.peek).toBe("function");
     expect(typeof db.dbTeam.create).toBe("function");
     expect(typeof db.dbTeam.update).toBe("function");
     expect(typeof db.dbTeam.delete).toBe("function");
 
-    expect(typeof db.dbIssue.findById).toBe("function");
+    expect(typeof db.dbIssue.peek).toBe("function");
   });
 });
 
 // ---------------------------------------------------------------------------
-// findById
+// peek
 // ---------------------------------------------------------------------------
 
-describe("createDb — findById", () => {
+describe("createDb — peek", () => {
   it("returns null when no record is in the pool", () => {
-    expect(db.dbTeam.findById("missing")).toBeNull();
+    expect(db.dbTeam.peek("missing")).toBeNull();
   });
 
   it("returns the pooled record after create", () => {
     const team = db.dbTeam.create({ id: "team-1", name: "Engineering" });
-    expect(db.dbTeam.findById("team-1")).toBe(team);
+    expect(db.dbTeam.peek("team-1")).toBe(team);
   });
 });
 
@@ -172,12 +172,12 @@ describe("createDb — delete", () => {
       id: "issue-cascade",
       teamId: "team-cascade",
     });
-    expect(db.dbIssue.findById("issue-cascade")).not.toBeNull();
+    expect(db.dbIssue.peek("issue-cascade")).not.toBeNull();
 
     db.dbTeam.delete("team-cascade");
 
-    expect(db.dbIssue.findById("issue-cascade")).toBeNull();
-    expect(db.dbTeam.findById("team-cascade")).toBeNull();
+    expect(db.dbIssue.peek("issue-cascade")).toBeNull();
+    expect(db.dbTeam.peek("team-cascade")).toBeNull();
   });
 
   it("throws when the record is not in the pool", () => {
@@ -227,7 +227,7 @@ describe("createDb — batch", () => {
     expect(begin).toHaveBeenCalledTimes(1);
     expect(end).toHaveBeenCalledExactlyOnceWith(batchId);
     expect(queue.pendingCount).toBe(before + 2);
-    expect(db.dbTeam.findById("team-batch-1")?.name).toBe("C");
+    expect(db.dbTeam.peek("team-batch-1")?.name).toBe("C");
   });
 
   it("returns the batchId from a sync batch", () => {
@@ -253,7 +253,7 @@ describe("createDb — batch", () => {
     const batchId = await result;
     expect(typeof batchId).toBe("string");
     expect(end).toHaveBeenCalledWith(batchId);
-    expect(db.dbTeam.findById("team-batch-3")?.name).toBe("R");
+    expect(db.dbTeam.peek("team-batch-3")?.name).toBe("R");
   });
 
   it("ends the batch even when fn throws", () => {
@@ -268,7 +268,7 @@ describe("createDb — batch", () => {
     ).toThrow(/boom/);
 
     expect(end).toHaveBeenCalledTimes(1);
-    expect(db.dbTeam.findById("team-batch-4")?.name).toBe("J");
+    expect(db.dbTeam.peek("team-batch-4")?.name).toBe("J");
   });
 
   it("allows delete calls to join an outer db.batch", () => {
@@ -290,8 +290,8 @@ describe("createDb — batch", () => {
 
     expect(begin).toHaveBeenCalledTimes(1);
     expect(end).toHaveBeenCalledTimes(1);
-    expect(db.dbTeam.findById("team-batch-del")).toBeNull();
-    expect(db.dbIssue.findById("issue-batch-del")).toBeNull();
+    expect(db.dbTeam.peek("team-batch-del")).toBeNull();
+    expect(db.dbIssue.peek("issue-batch-del")).toBeNull();
   });
 
   it("rejects nested batches instead of overwriting the active batch", () => {
@@ -307,31 +307,73 @@ describe("createDb — batch", () => {
     ).toThrow(/Nested batches are not supported/);
 
     // The outer batch still closes cleanly, so future batches can proceed.
-    expect(db.dbTeam.findById("team-batch-nested")?.name).toBe("Inner");
+    expect(db.dbTeam.peek("team-batch-nested")?.name).toBe("Inner");
     expect(() =>
       db.batch(() => {
         db.dbTeam.update("team-batch-nested", { name: "Recovered" });
       }),
     ).not.toThrow();
-    expect(db.dbTeam.findById("team-batch-nested")?.name).toBe("Recovered");
+    expect(db.dbTeam.peek("team-batch-nested")?.name).toBe("Recovered");
   });
 });
 
 // ---------------------------------------------------------------------------
-// getAll
+// peekAll
 // ---------------------------------------------------------------------------
 
-describe("createDb — getAll", () => {
+describe("createDb — peekAll", () => {
   it("returns every record currently in the pool for that entity", () => {
-    expect(db.dbTeam.getAll()).toEqual([]);
+    expect(db.dbTeam.peekAll()).toEqual([]);
 
-    const a = db.dbTeam.create({ id: "team-getall-a", name: "A" });
-    const b = db.dbTeam.create({ id: "team-getall-b", name: "B" });
+    const a = db.dbTeam.create({ id: "team-peekall-a", name: "A" });
+    const b = db.dbTeam.create({ id: "team-peekall-b", name: "B" });
 
-    const teams = db.dbTeam.getAll();
+    const teams = db.dbTeam.peekAll();
     expect(teams).toHaveLength(2);
     expect(teams).toContain(a);
     expect(teams).toContain(b);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// peekByIndex
+// ---------------------------------------------------------------------------
+
+describe("createDb — peekByIndex", () => {
+  it("returns only pooled records where record[key] === value", () => {
+    db.dbTeam.create({ id: "team-pbi-a", name: "A" });
+    const issue1 = db.dbIssue.create({
+      id: "issue-pbi-1",
+      teamId: "team-pbi-a",
+    });
+    const issue2 = db.dbIssue.create({
+      id: "issue-pbi-2",
+      teamId: "team-pbi-a",
+    });
+    db.dbIssue.create({ id: "issue-pbi-3", teamId: null });
+
+    const issues = db.dbIssue.peekByIndex("teamId", "team-pbi-a");
+    expect(issues).toHaveLength(2);
+    expect(issues).toContain(issue1);
+    expect(issues).toContain(issue2);
+  });
+
+  it("returns [] when nothing in the pool matches", () => {
+    expect(db.dbIssue.peekByIndex("teamId", "team-missing")).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// refreshByIndex
+// ---------------------------------------------------------------------------
+
+describe("createDb — refreshByIndex", () => {
+  it("delegates to StoreManager.refreshCollection (diff-based, in-place)", async () => {
+    const refresh = vi.spyOn(sm, "refreshCollection").mockResolvedValue([]);
+
+    await db.dbIssue.refreshByIndex("teamId", "team-rbi");
+
+    expect(refresh).toHaveBeenCalledWith("DbIssue", "teamId", "team-rbi");
   });
 });
 
@@ -355,35 +397,33 @@ describe("createDb — archive", () => {
 });
 
 // ---------------------------------------------------------------------------
-// async loaders — load / loadByIds / loadByIndex / loadAll / getOrLoad
+// async readers — get / getByIds / getByIndex / getAll
 // ---------------------------------------------------------------------------
 
-describe("createDb — async loaders", () => {
-  it("load(id) delegates to StoreManager.loadOne", async () => {
-    const loadOne = vi
-      .spyOn(sm, "loadOne")
-      .mockResolvedValue(null);
+describe("createDb — async readers", () => {
+  it("get(id) delegates to StoreManager.loadOne", async () => {
+    const loadOne = vi.spyOn(sm, "loadOne").mockResolvedValue(null);
 
-    const result = await db.dbTeam.load("team-load-1");
+    const result = await db.dbTeam.get("team-load-1");
 
     expect(loadOne).toHaveBeenCalledWith("DbTeam", "team-load-1");
     expect(result).toBeNull();
   });
 
-  it("loadByIds delegates to StoreManager.loadByIds", async () => {
+  it("getByIds delegates to StoreManager.loadByIds", async () => {
     const loadByIds = vi.spyOn(sm, "loadByIds").mockResolvedValue([]);
 
-    await db.dbTeam.loadByIds(["a", "b"]);
+    await db.dbTeam.getByIds(["a", "b"]);
 
     expect(loadByIds).toHaveBeenCalledWith("DbTeam", ["a", "b"]);
   });
 
-  it("loadByIndex routes through StoreManager.loadCollection with the typed key", async () => {
+  it("getByIndex routes through StoreManager.loadCollection with the typed key", async () => {
     const loadCollection = vi
       .spyOn(sm, "loadCollection")
       .mockResolvedValue([]);
 
-    await db.dbIssue.loadByIndex("teamId", "team-idx");
+    await db.dbIssue.getByIndex("teamId", "team-idx");
 
     expect(loadCollection).toHaveBeenCalledWith(
       "DbIssue",
@@ -392,19 +432,17 @@ describe("createDb — async loaders", () => {
     );
   });
 
-  it("loadAll delegates to StoreManager.getOrLoadAll", async () => {
-    const getOrLoadAll = vi
-      .spyOn(sm, "getOrLoadAll")
-      .mockResolvedValue([]);
+  it("getAll() delegates to StoreManager.getOrLoadAll", async () => {
+    const getOrLoadAll = vi.spyOn(sm, "getOrLoadAll").mockResolvedValue([]);
 
-    await db.dbTeam.loadAll();
+    await db.dbTeam.getAll();
 
     expect(getOrLoadAll).toHaveBeenCalledWith("DbTeam");
   });
 
-  it("load(id) resolves with the pooled record without re-hitting storage", async () => {
+  it("get(id) resolves with the pooled record without re-hitting storage", async () => {
     const team = db.dbTeam.create({ id: "team-cache-hit", name: "cached" });
-    const result = await db.dbTeam.load("team-cache-hit");
+    const result = await db.dbTeam.get("team-cache-hit");
     // StoreManager.loadOne is itself pool-first, so a pooled record returns
     // the same instance without touching IDB or the network.
     expect(result).toBe(team);
@@ -531,25 +569,25 @@ describe("createDb — undo / redo", () => {
     db.batch(() => {
       db.dbTeam.update("team-undo-2", { name: "after" });
     });
-    expect(db.dbTeam.findById("team-undo-2")?.name).toBe("after");
+    expect(db.dbTeam.peek("team-undo-2")?.name).toBe("after");
 
     const beforeRedo = db.redoDepth;
     await db.undo();
 
-    expect(db.dbTeam.findById("team-undo-2")?.name).toBe("before");
+    expect(db.dbTeam.peek("team-undo-2")?.name).toBe("before");
     expect(db.redoDepth).toBe(beforeRedo + 1);
   });
 
   it("redo replays the undone batch", async () => {
     db.dbTeam.create({ id: "team-undo-3", name: "v1" });
     db.dbTeam.update("team-undo-3", { name: "v2" });
-    expect(db.dbTeam.findById("team-undo-3")?.name).toBe("v2");
+    expect(db.dbTeam.peek("team-undo-3")?.name).toBe("v2");
 
     await db.undo();
-    expect(db.dbTeam.findById("team-undo-3")?.name).toBe("v1");
+    expect(db.dbTeam.peek("team-undo-3")?.name).toBe("v1");
 
     await db.redo();
-    expect(db.dbTeam.findById("team-undo-3")?.name).toBe("v2");
+    expect(db.dbTeam.peek("team-undo-3")?.name).toBe("v2");
     expect(db.redoDepth).toBe(0);
   });
 
@@ -580,7 +618,7 @@ describe("createDb — seed", () => {
 
     expect(seeded).toHaveLength(2);
     expect(seeded[0].name).toBe("Seeded A");
-    expect(db.dbTeam.findById("team-seed-1")).toBe(seeded[0]);
+    expect(db.dbTeam.peek("team-seed-1")).toBe(seeded[0]);
     expect(sm.transactionQueue.pendingCount).toBe(before);
   });
 
