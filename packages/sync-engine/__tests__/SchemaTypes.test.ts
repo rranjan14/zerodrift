@@ -308,12 +308,9 @@ describe("InferCreateInput / InferUpdateInput", () => {
     expectTypeOf<CreateIssue["creatorId"]>().toEqualTypeOf<string>();
   });
 
-  it("nullable / defaulted / id-kind fields are optional", () => {
+  it("defaulted and id-kind fields are optional, nullable fields are still explicit", () => {
     type CreateIssue = InferCreateInput<Schema, "issue">;
-    // nullable
-    expectTypeOf<CreateIssue["teamId"]>().toEqualTypeOf<
-      string | null | undefined
-    >();
+    expectTypeOf<CreateIssue["teamId"]>().toEqualTypeOf<string | null>();
     // defaulted
     expectTypeOf<CreateIssue["description"]>().toEqualTypeOf<
       string | undefined

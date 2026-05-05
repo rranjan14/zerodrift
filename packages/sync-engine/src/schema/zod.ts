@@ -1,6 +1,6 @@
 import type { z } from "zod";
 import type { LoadStrategy } from "../core/types";
-import { fields, entity } from "./builders";
+import { fields, entity, rebuildFieldBuilder } from "./builders";
 import type { AnyFieldBuilder, EntityDef, FieldBuilder } from "./types";
 
 /**
@@ -44,12 +44,18 @@ export function fromZod<Z extends z.ZodType>(
 ): FieldBuilder<z.infer<Z>> {
   let current = zSchema as unknown as ZodLike;
   let nullable = false;
+  let optional = false;
   let defaultValue: unknown = undefined;
 
   while (true) {
     const { type, innerType, defaultValue: inner } = current._zod.def;
-    if ((type === "nullable" || type === "optional") && innerType != null) {
+    if (type === "nullable" && innerType != null) {
       nullable = true;
+      current = innerType;
+      continue;
+    }
+    if (type === "optional" && innerType != null) {
+      optional = true;
       current = innerType;
       continue;
     }
@@ -68,6 +74,12 @@ export function fromZod<Z extends z.ZodType>(
   }
   if (nullable) {
     builder = builder.nullable();
+  }
+  if (optional) {
+    builder = rebuildFieldBuilder<z.infer<Z>, typeof builder.meta>({
+      ...builder.meta,
+      optional: true,
+    });
   }
   return builder as FieldBuilder<z.infer<Z>>;
 }
@@ -101,7 +113,7 @@ export function entityFromZod<Z extends z.ZodObject>(
 ): EntityDef<FieldsFromZodObject<Z>> {
   const fieldsRecord: Record<string, AnyFieldBuilder> = {};
   for (const [key, fieldSchema] of Object.entries(zSchema.shape)) {
-    fieldsRecord[key] = fromZod(fieldSchema);
+    fieldsRecord[key] = key === "id" ? fields.id() : fromZod(fieldSchema);
   }
   return entity({
     loadStrategy: opts.loadStrategy,

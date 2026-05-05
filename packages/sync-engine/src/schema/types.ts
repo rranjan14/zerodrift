@@ -12,6 +12,7 @@ export type FieldKind =
 export interface FieldMeta {
   kind: FieldKind;
   nullable: boolean;
+  optional: boolean;
   indexed: boolean;
   ephemeral: boolean;
   default?: unknown;

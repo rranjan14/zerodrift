@@ -237,4 +237,37 @@ describe("extend — composing multiple descriptors", () => {
     expect(typeof issue.moveToTeam).toBe("function");
     expect(typeof issue.bump).toBe("function");
   });
+
+  it("rebinds extension implementations when createDb() runs again", () => {
+    db.extTeam.create({ id: "team-rebind", key: "REB", name: "Rebind" });
+    const issue = db.extIssue.create({
+      id: "issue-rebind",
+      sortOrder: 2,
+      teamId: "team-rebind",
+    });
+    expect(issue.identifier).toBe("team-2");
+
+    const replacement = extend(extSchema, "extIssue", {
+      computed: {
+        identifier: (record) => `replacement:${record.sortOrder}`,
+      },
+      actions: {
+        moveToTeam(record, newTeamId: string) {
+          record.teamId = `${newTeamId}:patched`;
+        },
+      },
+    });
+
+    const rebound = createDb({
+      schema: extSchema,
+      storeManager: sm,
+      extensions: [replacement, teamBehavior] as const,
+    });
+
+    const reboundIssue = rebound.extIssue.findById("issue-rebind");
+    expect(reboundIssue?.identifier).toBe("replacement:2");
+
+    reboundIssue?.moveToTeam("team-next");
+    expect(reboundIssue?.teamId).toBe("team-next:patched");
+  });
 });

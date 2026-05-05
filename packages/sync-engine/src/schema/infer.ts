@@ -119,12 +119,12 @@ export type InferEntity<S extends SchemaDef, K extends EntityKey<S>> =
 /**
  * A create-input field is optional when the runtime can fill it without
  * the caller: id-kind (BaseModel auto-assigns a UUID), defaulted fields,
- * and nullable fields (`undefined` is treated as null on hydrate).
+ * and schema fields explicitly marked optional (e.g. via Zod's `.optional()`).
  */
 type IsOptionalCreateField<F> = F extends FieldBuilder<infer T, infer M>
   ? M extends { kind: "id" } | { default: unknown }
     ? true
-    : null extends T
+    : M extends { optional: true }
       ? true
       : false
   : false;

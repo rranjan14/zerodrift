@@ -40,8 +40,15 @@ function makeBuilder<T, M extends FieldMeta>(meta: M): FieldBuilder<T, M> {
   };
 }
 
+export function rebuildFieldBuilder<T, M extends FieldMeta>(
+  meta: M,
+): FieldBuilder<T, M> {
+  return makeBuilder<T, M>(meta);
+}
+
 const baseFlags = {
   nullable: false as const,
+  optional: false as const,
   indexed: false as const,
   ephemeral: false as const,
 };

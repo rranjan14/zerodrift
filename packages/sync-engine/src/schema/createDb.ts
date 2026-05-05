@@ -1,3 +1,4 @@
+import { action, computed } from "mobx";
 import type { BaseModel } from "../core/BaseModel";
 import { ModelRegistry } from "../core/ModelRegistry";
 import {
@@ -118,7 +119,7 @@ export function createDb<
     if (defs == null) {
       continue;
     }
-    applyExtension(registryName, defs);
+    applyExtension(registryName, defs, sm);
   }
 
   const db: Record<string, unknown> = {
@@ -162,34 +163,71 @@ function mergeExtensions<S extends SchemaDef>(
   return out;
 }
 
-function applyExtension(registryName: string, defs: ExtensionBucket): void {
+function applyExtension(
+  registryName: string,
+  defs: ExtensionBucket,
+  sm: StoreManager,
+): void {
   const meta = ModelRegistry.getModelMeta(registryName);
   if (meta == null) {
     return;
   }
   const prototype = meta.ctor.prototype as object;
 
-  // Idempotent: createDb may run more than once per app (tests, hot reload).
-  // The synthetic prototype is shared, so we only install each accessor once
-  // and rely on `meta.computedProps` / `meta.actions` as the canonical record
-  // of what's already wired.
   for (const [name, fn] of Object.entries(defs.computed)) {
-    if (meta.computedProps.has(name)) {
-      continue;
-    }
     installComputedAccessor(prototype, name, fn as (record: object) => unknown);
     meta.computedProps.add(name);
+    rebindComputedInstances(sm, registryName, name);
   }
   for (const [name, fn] of Object.entries(defs.actions)) {
-    if (meta.actions.has(name)) {
-      continue;
-    }
     installActionMethod(
       prototype,
       name,
       fn as (record: object, ...args: never[]) => unknown,
     );
     meta.actions.add(name);
+    rebindActionInstances(sm, registryName, name);
+  }
+}
+
+function rebindComputedInstances(
+  sm: StoreManager,
+  registryName: string,
+  name: string,
+): void {
+  for (const instance of sm.objectPool.getAll(registryName)) {
+    const descriptor = Object.getOwnPropertyDescriptor(
+      Object.getPrototypeOf(instance),
+      name,
+    );
+    if (descriptor?.get == null) {
+      continue;
+    }
+    const memo = computed(descriptor.get.bind(instance));
+    Object.defineProperty(instance, name, {
+      get: () => memo.get(),
+      configurable: true,
+    });
+  }
+}
+
+function rebindActionInstances(
+  sm: StoreManager,
+  registryName: string,
+  name: string,
+): void {
+  for (const instance of sm.objectPool.getAll(registryName)) {
+    const method = (Object.getPrototypeOf(instance) as Record<string, unknown>)[
+      name
+    ];
+    if (typeof method !== "function") {
+      continue;
+    }
+    Object.defineProperty(instance, name, {
+      configurable: true,
+      writable: true,
+      value: action(method.bind(instance)),
+    });
   }
 }
 

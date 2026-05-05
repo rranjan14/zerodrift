@@ -31,9 +31,11 @@ describe("fromZod — primitive mapping", () => {
     expect(fromZod(z.enum(["a", "b"])).meta.kind).toBe("json");
   });
 
-  it("propagates .nullable() and .optional() to the field's nullable flag", () => {
+  it("keeps nullable and optional as distinct field semantics", () => {
     expect(fromZod(z.string().nullable()).meta.nullable).toBe(true);
-    expect(fromZod(z.string().optional()).meta.nullable).toBe(true);
+    expect(fromZod(z.string().nullable()).meta.optional).toBe(false);
+    expect(fromZod(z.string().optional()).meta.optional).toBe(true);
+    expect(fromZod(z.string().optional()).meta.nullable).toBe(false);
     expect(fromZod(z.string()).meta.nullable).toBe(false);
   });
 
@@ -90,7 +92,7 @@ describe("entityFromZod — runtime shape", () => {
       name: "ZodTeam",
     });
     expect(Object.keys(team.fields)).toEqual(["id", "name", "description"]);
-    expect(team.fields.id.meta.kind).toBe("string");
+    expect(team.fields.id.meta.kind).toBe("id");
     expect(team.fields.name.meta.kind).toBe("string");
     expect(team.fields.description.meta.nullable).toBe(true);
   });
@@ -134,6 +136,7 @@ describe("entityFromZod — end-to-end through compileSchema", () => {
     compileSchema(schema);
 
     const teamMeta = ModelRegistry.getModelMeta("ZodFlowTeam")!;
+    expect(teamMeta.properties.has("id")).toBe(false);
     expect(teamMeta.properties.get("name")?.type).toBe(PropertyType.Property);
     expect(teamMeta.properties.get("description")?.nullable).toBe(true);
 
@@ -209,5 +212,11 @@ describe("entityFromZod — link()-side FKs still come from s.refId", () => {
     )!.properties.get("teamId")!;
     expect(teamId.type).toBe(PropertyType.Reference);
     expect(teamId.referenceTo).toBe("ZodLinkedTeam");
+  });
+
+  it("preserves optional Zod fields as optional create-input fields without making them nullable", () => {
+    const optionalField = fromZod(z.string().optional());
+    expect(optionalField.meta.optional).toBe(true);
+    expect(optionalField.meta.nullable).toBe(false);
   });
 });
