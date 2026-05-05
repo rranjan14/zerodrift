@@ -104,20 +104,26 @@ Context is read on demand at id-mint time, not captured — re-call `setContext`
 ```typescript
 import { PropertyType, StoreManager } from "sync-engine";
 
-const sm = new StoreManager<AgentContext>({
+type LayerContext = { layerId: string };
+
+const sm = new StoreManager<LayerContext>({
   workspaceId: "agent-1",
   bootstrapFetcher,
   applyFieldTransforms: (_meta, prop) => {
     if (prop.type !== PropertyType.Reference) return undefined;
-    return (value, instance) => {
+    return (value, instance, ctx) => {
       if (typeof value !== "string" || value === "" || value.includes("/")) {
         return value;
       }
-      const layerId = (instance as { layerId?: string }).layerId;
+      // Prefer the instance's own layerId; fall back to live context for
+      // freshly-constructed models that haven't been assigned one yet.
+      const layerId =
+        (instance as { layerId?: string }).layerId ?? ctx?.layerId;
       return layerId != null ? `${layerId}/${value}` : value;
     };
   },
 });
+sm.setContext({ layerId: "layer-prod" });
 ```
 
 Storage is per-StoreManager — rebuilding the engine swaps the rules cleanly without mutating `ModelRegistry`. The rule is invoked at most once per property; the setter hot path early-exits when nothing was registered. Read sibling fields from `instance` first; fall back to `ctx` when the instance hasn't been hydrated yet.

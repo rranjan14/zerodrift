@@ -255,26 +255,31 @@ Use case: a multi-layer app where ids are namespaced as `<layerId>/<id>` and you
 ```ts
 import { PropertyType, StoreManager } from "sync-engine";
 
-const sm = new StoreManager({
+type LayerContext = { layerId: string };
+
+const sm = new StoreManager<LayerContext>({
   workspaceId,
   bootstrapFetcher,
   applyFieldTransforms: (_meta, prop) => {
     if (prop.type !== PropertyType.Reference) return undefined;
-    return (value, instance) => {
+    return (value, instance, ctx) => {
       if (typeof value !== "string" || value === "" || value.includes("/")) {
         return value;
       }
-      const layerId = (instance as { layerId?: string }).layerId;
+      // Prefer the instance's own layerId; fall back to live context for
+      // freshly-constructed models that haven't been assigned one yet.
+      const layerId = (instance as { layerId?: string }).layerId ?? ctx?.layerId;
       return layerId != null ? `${layerId}/${value}` : value;
     };
   },
 });
+sm.setContext({ layerId: "layer-prod" });
 
 issue.teamId = "team-42";          // → "layer-prod/team-42"
 issue.teamId = "layer-prod/team-42"; // already prefixed; left alone
 ```
 
-The rule is consulted once per `(model, property)` pair at construction. The setter hot path skips the lookup entirely when no rule was configured. Transform receives `(value, instance, context)` — read sibling fields off the instance, fall back to context for cases where the instance hasn't been hydrated yet.
+The rule is consulted once per `(model, property)` pair at construction. The setter hot path skips the lookup entirely when no rule was configured. The transform receives `(value, instance, context)` — read sibling fields off the instance first, fall back to `context` for cases where the instance hasn't been hydrated yet.
 
 ### Reading data
 
