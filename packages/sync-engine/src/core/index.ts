@@ -1,5 +1,6 @@
 // Types & enums
 export * from "./types";
+export { dateSerializer, dateDeserializer } from "./serializers";
 
 // Model definition
 export { ModelRegistry } from "./ModelRegistry";

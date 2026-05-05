@@ -29,10 +29,9 @@ import {
   BackReference,
 } from "@sync-engine/decorators";
 import { LoadStrategy } from "@sync-engine/types";
+import { dateDeserializer, dateSerializer } from "@sync-engine/serializers";
 import type { RefCollection } from "@sync-engine/LazyCollection";
 import type { OwnedRefs } from "@sync-engine/LazyOwnedCollection";
-const dateSerializer = (v: Date) => (v instanceof Date ? v.toISOString() : v);
-const dateDeserializer = (v: unknown) => new Date(v as string);
 import { reaction } from "mobx";
 import type { StoreManager } from "@sync-engine/StoreManager";
 import type { IObjectPool } from "@sync-engine/types";

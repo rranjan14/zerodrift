@@ -6,7 +6,8 @@
   "main": "./src/core/index.ts",
   "exports": {
     ".": "./src/core/index.ts",
-    "./react": "./src/react/index.tsx"
+    "./react": "./src/react/index.tsx",
+    "./schema": "./src/schema/index.ts"
   },
   "scripts": {
     "test": "vitest run",

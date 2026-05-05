@@ -29,6 +29,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      "@sync-engine/schema": path.resolve(__dirname, "src/schema"),
       "@sync-engine": path.resolve(__dirname, "src/core"),
     },
   },

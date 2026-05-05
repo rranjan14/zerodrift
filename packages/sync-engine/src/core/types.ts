@@ -117,7 +117,7 @@ export interface PropertyMeta {
   inverseOf?: string; // for BackReference: the property name on the other side
   idField?: string; // for ReferenceModel: the backing ID property name (e.g. "teamId")
   idsField?: string; // for OwnedCollection: the array property holding the IDs (e.g. "issueIds")
-  onDelete?: "cascade" | "nullify" | "restrict";
+  onDelete?: OnDelete;
   /**
    * Additional FK axes a `@*ReferenceCollection` covers beyond `inverseOf`.
    * Each entry names a property on the *parent* model whose value is also a
@@ -146,6 +146,9 @@ export interface PropertyChange {
   oldValue: unknown;
   newValue: unknown;
 }
+
+/** Behavior when the parent of a `Reference` / `BackReference` is deleted. */
+export type OnDelete = "cascade" | "nullify" | "restrict";
 
 // ---------------------------------------------------------------------------
 // Minimal interfaces used by BaseModel to avoid circular imports

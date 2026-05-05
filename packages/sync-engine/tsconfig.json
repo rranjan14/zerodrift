@@ -16,6 +16,7 @@
     "useDefineForClassFields": false,
     "skipLibCheck": true,
     "paths": {
+      "@sync-engine/schema": ["./src/schema/index.ts"],
       "@sync-engine/*": ["./src/core/*"]
     }
   },
