@@ -119,9 +119,9 @@ describe("Eager @Reference hydration", () => {
       refUserId: "u1",
     });
 
-    // Eager load is fire-and-forget. loadOne is idempotent — calling it again
+    // Eager load is fire-and-forget. getOrLoadById is idempotent — calling it again
     // either returns the in-flight result or finishes the read from IDB.
-    const user = await manager.loadOne("TestUser", "u1");
+    const user = await manager.getOrLoadById("TestUser", "u1");
     expect(user).not.toBeNull();
     expect(manager.objectPool.getById("TestUser", "u1")).toBeDefined();
   });

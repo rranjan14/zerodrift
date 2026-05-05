@@ -21,7 +21,7 @@ afterEach(async () => {
  * adapter already has coverage.
  */
 describe("Persistent partial-index coverage", () => {
-  it("records coverage on successful loadCollection", async () => {
+  it("records coverage on successful getOrLoadCollection", async () => {
     const adapter = new MemoryAdapter();
     const fetcher = vi.fn().mockResolvedValue([
       { id: "a1", taskId: "t1", text: "first" },
@@ -38,7 +38,7 @@ describe("Persistent partial-index coverage", () => {
     });
     await manager.bootstrap();
 
-    await manager.loadCollection("TestActivity", "taskId", "t1");
+    await manager.getOrLoadCollection("TestActivity", "taskId", "t1");
 
     const recorded = await adapter.loadPartialIndexes();
     expect(recorded).toContainEqual({
@@ -49,7 +49,7 @@ describe("Persistent partial-index coverage", () => {
     });
   });
 
-  it("marks the model loaded even when loadCollection returns empty", async () => {
+  it("marks the model loaded even when getOrLoadCollection returns empty", async () => {
     // Without this, the SSE catchup URL would omit the model and future
     // server-side inserts for it would get filtered out.
     const adapter = new MemoryAdapter();
@@ -67,7 +67,7 @@ describe("Persistent partial-index coverage", () => {
     await manager.bootstrap();
 
     expect([...adapter.loadedModels]).not.toContain("TestActivity");
-    await manager.loadCollection("TestActivity", "taskId", "t-empty");
+    await manager.getOrLoadCollection("TestActivity", "taskId", "t-empty");
     expect([...adapter.loadedModels]).toContain("TestActivity");
   });
 
@@ -94,7 +94,7 @@ describe("Persistent partial-index coverage", () => {
   it("skips the server fetch when prior coverage is rehydrated from the adapter", async () => {
     const adapter = new MemoryAdapter();
     await adapter.recordPartialIndex("TestActivity", "taskId", "t1", 0);
-    // Pre-seed the adapter with the records so loadCollection returns them via
+    // Pre-seed the adapter with the records so getOrLoadCollection returns them via
     // the IDB read path even though the server fetcher is never called.
     await adapter.writeModels("TestActivity", [
       { id: "a1", taskId: "t1", text: "cached" },
@@ -113,7 +113,7 @@ describe("Persistent partial-index coverage", () => {
     });
     await manager.bootstrap();
 
-    const items = await manager.loadCollection("TestActivity", "taskId", "t1");
+    const items = await manager.getOrLoadCollection("TestActivity", "taskId", "t1");
 
     expect(fetcher).not.toHaveBeenCalled();
     expect(items.map((m) => m.id)).toEqual(["a1"]);
@@ -190,7 +190,7 @@ describe("Persistent partial-index coverage", () => {
     });
     await manager.bootstrap();
 
-    await manager.loadCollection("TestActivity", "taskId", "t1");
+    await manager.getOrLoadCollection("TestActivity", "taskId", "t1");
 
     expect(manager.getPartialIndexCoverage()).toContainEqual({
       modelName: "TestActivity",

@@ -59,7 +59,7 @@ describe("loadedModels tracking", () => {
   });
 
   it("markModelLoaded marks the model even with no rows written", async () => {
-    // Empty server response from `loadCollection` / `loadOne` still expresses
+    // Empty server response from `getOrLoadCollection` / `getOrLoadById` still expresses
     // "we want SSE deltas for this model". The adapter's writeModels path
     // bails on records.length === 0, so a separate marker call is the only
     // way to register the load.

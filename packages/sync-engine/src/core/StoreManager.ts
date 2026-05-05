@@ -15,8 +15,8 @@
  *   storeManager.undo(); // reverts both
  *
  * Lazy loading:
- *   storeManager.loadCollection("Issue", "teamId", teamId)
- *   storeManager.loadOne("DocumentContent", docId)
+ *   storeManager.getOrLoadCollection("Issue", "teamId", teamId)
+ *   storeManager.getOrLoadById("DocumentContent", docId)
  */
 
 import { ModelRegistry } from "./ModelRegistry";
@@ -231,7 +231,7 @@ export interface StoreManagerConfig {
     value: string,
   ) => Promise<Record<string, unknown>[]>;
 
-  /** Batch ID lookup used by loadByIds — receives all missing IDs at once so
+  /** Batch ID lookup used by getOrLoadByIds — receives all missing IDs at once so
    * the caller can make a single server request instead of one per ID. */
   onDemandBatchFetcher?: (
     modelName: string,
@@ -240,13 +240,13 @@ export interface StoreManagerConfig {
 
   /**
    * Batched index-query fetcher. When provided, concurrent
-   * `loadCollection(modelName, indexKey, value)` calls — including the per-axis
+   * `getOrLoadCollection(modelName, indexKey, value)` calls — including the per-axis
    * fan-out a `coveringIndexes` collection produces — coalesce into a single
    * call within one microtask. Identical triples dedupe; the server returns a
    * map keyed by model name; the loader splits each model's records back to
    * the originating waiters by FK match.
    *
-   * If omitted, each loadCollection still calls `onDemandFetcher` per triple
+   * If omitted, each getOrLoadCollection still calls `onDemandFetcher` per triple
    * (existing behavior).
    */
   onDemandIndexBatchFetcher?: IndexBatchFetcher;
@@ -547,7 +547,7 @@ export class StoreManager {
         this.syncConnection.connect();
         // Reconnect SSE when the loaded-models set changes — server uses
         // it as `onlyModels` for both catchup and live stream. Debounce so
-        // a burst of writes (e.g. loadCollection batch) only reconnects once.
+        // a burst of writes (e.g. getOrLoadCollection batch) only reconnects once.
         this.loadedModelsUnsub = this.database.onLoadedModelsChange(() =>
           this.scheduleSyncReconnect(),
         );
@@ -1387,8 +1387,8 @@ export class StoreManager {
     return `${modelName}:${id}`;
   }
 
-  /** Load all instances where indexKey === value (e.g. all Issues for a team). */
-  async loadCollection<T extends BaseModel = BaseModel>(
+  /** Pool-first collection lookup where indexKey === value (e.g. all Issues for a team). */
+  async getOrLoadCollection<T extends BaseModel = BaseModel>(
     modelName: string,
     indexKey: string,
     value: string,
@@ -1432,7 +1432,7 @@ export class StoreManager {
       // and anything SSE had already written. loadedCollections is then marked,
       // so future calls skip the server entirely and trust IDB as complete.
       //
-      // Contrast with loadOne: a single ID lookup is binary — either the record
+      // Contrast with getOrLoadById: a single ID lookup is binary — either the record
       // is in IDB or it isn't — so the server is only consulted as a last resort.
       const serverRecords = await fetchFromServer(modelName, indexKey, value);
       if (serverRecords.length > 0) {
@@ -1663,7 +1663,7 @@ export class StoreManager {
    * Remove every record where `record[indexKey] === value`, using the IDB
    * index for the database side. Pool side is still a linear scan (no
    * secondary in-memory index by field value). Also clears the matching
-   * `loadedCollections` cache key so a future `loadCollection(modelName,
+   * `loadedCollections` cache key so a future `getOrLoadCollection(modelName,
    * indexKey, value)` re-fetches from the server instead of trusting IDB.
    */
   async evictByIndex(
@@ -1713,8 +1713,8 @@ export class StoreManager {
     );
   }
 
-  /** Load multiple models by ID (for OwnedCollection resolution). */
-  async loadByIds<T extends BaseModel = BaseModel>(
+  /** Pool-first bulk lookup by ID (for OwnedCollection resolution). */
+  async getOrLoadByIds<T extends BaseModel = BaseModel>(
     modelName: string,
     ids: string[],
   ): Promise<T[]> {
@@ -1772,14 +1772,14 @@ export class StoreManager {
             }
             // Empty result still expresses "we asked for this model" — mark
             // it loaded so the SSE catchup URL includes it and future
-            // inserts arrive. Mirrors the same call in `loadOne`.
+            // inserts arrive. Mirrors the same call in `getOrLoadById`.
             this.database.markModelLoaded(modelName);
             for (const id of unloaded) {
               this.loadedIds.add(StoreManager.modelIdKey(modelName, id));
             }
           } else {
             await Promise.all(
-              unloaded.map((id) => this.loadOne(modelName, id)),
+              unloaded.map((id) => this.getOrLoadById(modelName, id)),
             );
           }
         }
@@ -1791,8 +1791,8 @@ export class StoreManager {
       .filter((m): m is T => m != null);
   }
 
-  /** Load a single model by ID (for partial/lazy models not yet in memory). */
-  async loadOne<T extends BaseModel = BaseModel>(
+  /** Pool-first single-model lookup by ID. */
+  async getOrLoadById<T extends BaseModel = BaseModel>(
     modelName: string,
     id: string,
   ): Promise<T | null> {
@@ -1842,35 +1842,6 @@ export class StoreManager {
     }
 
     return this.objectPool.hydrateAndPut(modelName, meta, record) as T;
-  }
-
-  // ── Get-or-load family ─────────────────────────────────────────────────────
-
-  /** Pool-first single-id lookup. Alias of `loadOne`. */
-  getOrLoadById<T extends BaseModel = BaseModel>(
-    modelName: string,
-    id: string,
-  ): Promise<T | null> {
-    return this.loadOne<T>(modelName, id);
-  }
-
-  /** Pool-first bulk-by-ids lookup. Coalesces missing ids into a single
-   * `onDemandBatchFetcher` call when configured (one request instead of
-   * N). Alias of `loadByIds`. */
-  getOrLoadByIds<T extends BaseModel = BaseModel>(
-    modelName: string,
-    ids: string[],
-  ): Promise<T[]> {
-    return this.loadByIds<T>(modelName, ids);
-  }
-
-  /** Pool-first collection lookup by indexed FK. Alias of `loadCollection`. */
-  getOrLoadCollection<T extends BaseModel = BaseModel>(
-    modelName: string,
-    indexKey: string,
-    value: string,
-  ): Promise<T[]> {
-    return this.loadCollection<T>(modelName, indexKey, value);
   }
 
   /**
@@ -1976,8 +1947,8 @@ export class StoreManager {
   //
   // No IDB write, no `partialIndexCoverage` mutation, no `loadedModels`
   // change. Adopters who want "this collection is fully covered, don't
-  // refetch on subsequent loadCollection" can additionally call
-  // `loadCollection` with a no-op fetcher to mark coverage.
+  // refetch on subsequent getOrLoadCollection" can additionally call
+  // `getOrLoadCollection` with a no-op fetcher to mark coverage.
 
   /** Hydrate `records` into the pool as instances of `modelName` and
    * return them. Skips any record whose model isn't registered.

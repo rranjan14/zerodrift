@@ -36,16 +36,16 @@ Five public hooks for reading data, plus `useUndoRedo` for the transaction stack
 
 | Hook | What it returns | When the loader fires |
 |---|---|---|
-| `useModel(name, id)` | `{ item, isLoading, error, reload }` | `loadOne` only when the pool is missing the entry. In-pool models render with `isLoading: false` from frame zero. |
-| `useModels(name, ids?)` | `{ items, isLoading, error, reload }` | No `ids` → reactive snapshot of every instance of the type, no loader. With `ids` → `loadByIds` only when at least one id is missing. Items follow the input `ids` order. |
-| `useIndexedCollection(name, indexKey, value)` | `{ items, isLoading, error, reload }` | `loadCollection` once per `(name, indexKey, value)` triple, gated by `sm.isCollectionLoaded(...)`. |
+| `useModel(name, id)` | `{ item, isLoading, error, reload }` | `getOrLoadById` only when the pool is missing the entry. In-pool models render with `isLoading: false` from frame zero. |
+| `useModels(name, ids?)` | `{ items, isLoading, error, reload }` | No `ids` → reactive snapshot of every instance of the type, no loader. With `ids` → `getOrLoadByIds` only when at least one id is missing. Items follow the input `ids` order. |
+| `useIndexedCollection(name, indexKey, value)` | `{ items, isLoading, error, reload }` | `getOrLoadCollection` once per `(name, indexKey, value)` triple, gated by `sm.isCollectionLoaded(...)`. |
 | `useCollection(refCollection)` | `{ items, isLoading, isLoaded, error, reload }` | Wraps a `RefCollection` / `OwnedRefs` you already hold (e.g. `team.issues`). Calls `.load()` on mount if not yet loaded. |
 | `useBackRef(backRef)` | `{ value, isLoading, isLoaded, error, reload }` | Wraps a `BackRef` (e.g. `issue.favorite`). Calls `.load()` on mount if not yet loaded. |
 
 `reload()` always re-fires the loader regardless of cache state. Auto-fire on mount is gated, so already-cached data doesn't trigger a redundant IDB scan.
 
 ```typescript
-// Pool-first read of a single model; falls back to loadOne on pool miss.
+// Pool-first read of a single model; falls back to getOrLoadById on pool miss.
 const { item: issue } = useModel<Issue>("Issue", issueId);
 
 // All Issues in the pool, reactive.

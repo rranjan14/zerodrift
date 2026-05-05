@@ -197,7 +197,7 @@ export class BaseModel {
             const sm = BaseModel.storeManager;
             const refTo = prop.referenceTo!;
             const id = currentValue;
-            sm.loadOne(refTo, id).catch((err) => {
+            sm.getOrLoadById(refTo, id).catch((err) => {
               sm.emitError(err, {
                 kind: "eagerReferenceLoad",
                 modelName: refTo,
@@ -240,7 +240,7 @@ export class BaseModel {
               // Each axis is an independent IDB read; fire in parallel.
               const batches = await Promise.all(
                 queries.map((q) =>
-                  sm.loadCollection(modelName, q.key, q.value),
+                  sm.getOrLoadCollection(modelName, q.key, q.value),
                 ),
               );
               return batches.flat();
@@ -282,7 +282,7 @@ export class BaseModel {
           if (BaseModel.storeManager != null) {
             const sm = BaseModel.storeManager;
             collection.setLoader(async (modelName, ids) => {
-              return sm.loadByIds(modelName, ids);
+              return sm.getOrLoadByIds(modelName, ids);
             });
             const refTo = prop.referenceTo!;
             collection.setOnError((err) => {
@@ -310,7 +310,7 @@ export class BaseModel {
           if (BaseModel.storeManager != null) {
             const sm = BaseModel.storeManager;
             backRef.setLoader(async (modelName, key, value) => {
-              const items = await sm.loadCollection(modelName, key, value);
+              const items = await sm.getOrLoadCollection(modelName, key, value);
               return items[0] ?? null;
             });
             const refTo = prop.referenceTo!;

@@ -237,7 +237,7 @@ export class RefCollection<
   /**
    * Cached covering values. Built in `hydrate()` from the parent's id +
    * `coveringIndexes` axes; `runLoad` passes this to the loader, which
-   * turns each entry into a `loadCollection` call and unions the results.
+   * turns each entry into a `getOrLoadCollection` call and unions the results.
    */
   private partialIndexValues: Array<{ key: string; value: string }> = [];
 

@@ -6,8 +6,9 @@
  *   getOrLoadCollection(modelName, indexKey, value)
  *   getOrLoadAll(modelName, { syncGroups? })
  *
- * The first two are aliases of `loadOne` / `loadCollection`. The third is
- * new: triggers a Full bootstrap fetch for the model (optionally scoped to
+ * The first three are the pool-first single-id, bulk-id, and indexed-
+ * collection lookups. The fourth triggers a Full bootstrap fetch for the
+ * model (optionally scoped to
  * sync groups), tracks coverage in `partialIndexCoverage` under the `"*"`
  * sentinel `indexKey`, and reuses the cache on subsequent same-scope calls.
  */
@@ -30,7 +31,7 @@ afterEach(async () => {
 });
 
 describe("StoreManager.getOrLoad family", () => {
-  it("getOrLoadById is generic and aliases loadOne", async () => {
+  it("getOrLoadById is generic and returns a typed model", async () => {
     const adapter = new MemoryAdapter();
     const fetcher = vi
       .fn()
@@ -89,7 +90,7 @@ describe("StoreManager.getOrLoad family", () => {
     ]);
   });
 
-  it("getOrLoadCollection is generic and aliases loadCollection", async () => {
+  it("getOrLoadCollection is generic and returns a typed collection", async () => {
     const adapter = new MemoryAdapter();
     const fetcher = vi
       .fn()

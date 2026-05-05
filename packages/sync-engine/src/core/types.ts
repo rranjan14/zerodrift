@@ -196,13 +196,13 @@ export interface IStoreManager {
     modelName: string,
     changes: Record<string, PropertyChange>,
   ): void;
-  loadCollection(
+  getOrLoadCollection(
     modelName: string,
     key: string,
     value: string,
   ): Promise<BaseModel[]>;
-  loadByIds(modelName: string, ids: string[]): Promise<BaseModel[]>;
-  loadOne(modelName: string, id: string): Promise<BaseModel | null>;
+  getOrLoadByIds(modelName: string, ids: string[]): Promise<BaseModel[]>;
+  getOrLoadById(modelName: string, id: string): Promise<BaseModel | null>;
   emitError(err: unknown, context: EngineErrorContext): void;
 }
 

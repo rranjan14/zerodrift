@@ -125,7 +125,7 @@ The `@Reference` getter is reactive to pool identity changes (insert / remove / 
 
 ### `@LazyReference`
 
-The lazy variant of `@Reference`. Same getter/setter semantics, but `makeModelObservable()` does NOT call `storeManager.loadOne` — the accessor returns whatever's in the pool right now (or `null`). Use when the referenced model is loaded by another path (separate fetch, lazy hook, etc.). See `04-lazy-loading.md`.
+The lazy variant of `@Reference`. Same getter/setter semantics, but `makeModelObservable()` does NOT call `storeManager.getOrLoadById` — the accessor returns whatever's in the pool right now (or `null`). Use when the referenced model is loaded by another path (separate fetch, lazy hook, etc.). See `04-lazy-loading.md`.
 
 ### `@ReferenceArray`
 

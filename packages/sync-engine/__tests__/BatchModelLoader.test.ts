@@ -80,7 +80,7 @@ describe("BatchModelLoader", () => {
 });
 
 describe("StoreManager wiring with onDemandIndexBatchFetcher", () => {
-  it("routes loadCollection through BatchModelLoader when configured", async () => {
+  it("routes getOrLoadCollection through BatchModelLoader when configured", async () => {
     const adapter = new MemoryAdapter();
     const batchFetcher = vi.fn(async () => ({
       TestActivity: [
@@ -102,8 +102,8 @@ describe("StoreManager wiring with onDemandIndexBatchFetcher", () => {
     await manager.bootstrap();
 
     const [t1, t2] = await Promise.all([
-      manager.loadCollection("TestActivity", "taskId", "t1"),
-      manager.loadCollection("TestActivity", "taskId", "t2"),
+      manager.getOrLoadCollection("TestActivity", "taskId", "t1"),
+      manager.getOrLoadCollection("TestActivity", "taskId", "t2"),
     ]);
 
     expect(batchFetcher).toHaveBeenCalledTimes(1);
@@ -129,7 +129,7 @@ describe("StoreManager wiring with onDemandIndexBatchFetcher", () => {
     });
     await manager.bootstrap();
 
-    await manager.loadCollection("TestActivity", "taskId", "t1");
+    await manager.getOrLoadCollection("TestActivity", "taskId", "t1");
     expect(fetcher).toHaveBeenCalledOnce();
     expect(fetcher).toHaveBeenCalledWith("TestActivity", "taskId", "t1");
   });

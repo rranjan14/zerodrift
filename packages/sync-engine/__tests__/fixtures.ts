@@ -112,9 +112,9 @@ export function makeFakeStoreManager(
     objectPool: makeFakePool(),
     commitCreate: overrides.commitCreate ?? (() => {}),
     commitUpdate: overrides.commitUpdate ?? (() => {}),
-    loadCollection: async () => [],
-    loadByIds: async () => [],
-    loadOne: async () => null,
+    getOrLoadCollection: async () => [],
+    getOrLoadByIds: async () => [],
+    getOrLoadById: async () => null,
   } as unknown as StoreManager;
 }
 

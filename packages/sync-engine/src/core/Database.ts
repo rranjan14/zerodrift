@@ -48,7 +48,7 @@ export enum BootstrapType {
 }
 
 /**
- * One recorded `loadCollection(modelName, indexKey, value)` query, captured
+ * One recorded `getOrLoadCollection(modelName, indexKey, value)` query, captured
  * with the `lastSyncId` at the time of fetch. Adopters ship these to the
  * server on partial fetches so it can return only deltas since `firstSyncId`.
  */
@@ -224,7 +224,7 @@ export interface StorageAdapter {
    * to a model and full clears do. */
   onLoadedModelsChange(cb: () => void): () => void;
   /** Mark a model as loaded even when no rows were written — e.g.
-   * `loadCollection` returned an empty server response, which still
+   * `getOrLoadCollection` returned an empty server response, which still
    * expresses "we want SSE deltas for this model". `writeModels` already
    * covers the non-empty case; this is the path for empty-but-successful
    * fetches. */
@@ -285,7 +285,7 @@ export interface StorageAdapter {
   /** Drop sync actions older than `belowSyncId`. Called periodically to bound storage. */
   pruneSyncActionsBelow(belowSyncId: number): Promise<void>;
   /**
-   * Record that a `loadCollection(modelName, indexKey, value)` query has been
+   * Record that a `getOrLoadCollection(modelName, indexKey, value)` query has been
    * fetched in full as of `firstSyncId`. Survives reload — on the next
    * bootstrap the engine knows which scoped queries are already covered
    * locally (and as of which point in the sync log) and can request a
@@ -1018,7 +1018,7 @@ export class Database implements StorageAdapter {
   // =========================================================================
   // Partial-index coverage store
   //
-  // Records `(modelName, indexKey, value)` triples for which loadCollection has
+  // Records `(modelName, indexKey, value)` triples for which getOrLoadCollection has
   // fetched in full. Survives reload — on next bootstrap the engine populates
   // its in-memory cache from this store and skips redundant network/IDB work.
   // =========================================================================

@@ -382,7 +382,7 @@ export class SyncConnection extends BaseSSEConnection {
   // For non-Instant models, SSE inserts should only enter the pool if the
   // relevant collection has already been loaded this session. Otherwise the
   // insert is written to IDB (step 4) and will be picked up the next time
-  // loadCollection is called for that parent.
+  // getOrLoadCollection is called for that parent.
   // =========================================================================
 
   private shouldHydrateInsert(

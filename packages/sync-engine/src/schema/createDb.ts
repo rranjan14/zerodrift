@@ -90,7 +90,7 @@ export interface EntityNamespace<
    * `value` is `string` because IDB indexes are string-typed; values from
    * non-string indexed fields (numbers, dates, refIds) need to be stringified
    * the same way the runtime serializes them. Future versions may type the
-   * value against the field's TS type once StoreManager.loadCollection
+   * value against the field's TS type once StoreManager.getOrLoadCollection
    * accepts non-string values.
    */
   getByIndex(
@@ -440,22 +440,22 @@ function createEntityNamespace(
       return recordsFrom(sm.peekByIndex(registryName, key, value));
     },
     async get(id) {
-      const model = await sm.loadOne(registryName, id);
+      const model = await sm.getOrLoadById(registryName, id);
       return model == null ? null : toRecord(model);
     },
     async getByIds(ids) {
-      const list = await sm.loadByIds(registryName, [...ids]);
+      const list = await sm.getOrLoadByIds(registryName, [...ids]);
       return recordsFrom(list);
     },
     async getByIndex(key, value) {
-      const list = await sm.loadCollection(registryName, key, value);
+      const list = await sm.getOrLoadCollection(registryName, key, value);
       return recordsFrom(list);
     },
     async getByIndexValues(key, values) {
-      // Fan out in parallel; loadCollection is a no-op for already-covered
+      // Fan out in parallel; getOrLoadCollection is a no-op for already-covered
       // (key, value) pairs, so re-firing for stale buckets is cheap.
       await Promise.all(
-        values.map((v) => sm.loadCollection(registryName, key, v)),
+        values.map((v) => sm.getOrLoadCollection(registryName, key, v)),
       );
       // After every bucket is loaded, walk the pool once per value to
       // preserve input order, deduping records that match multiple values.

@@ -273,7 +273,7 @@ const sm = new StoreManager({
 
 | `ctx.kind` | When it fires | Extra fields |
 |---|---|---|
-| `eagerReferenceLoad` | `@Reference` (eager) — `storeManager.loadOne` rejects | `modelName`, `id` |
+| `eagerReferenceLoad` | `@Reference` (eager) — `storeManager.getOrLoadById` rejects | `modelName`, `id` |
 | `eagerCollectionLoad` | `@ReferenceCollection` (eager) — loader rejects | `modelName`, `parentModelName`, `parentId` |
 | `lazyCollectionLoad` | `@LazyReferenceCollection` — loader rejects on explicit `.load()` | same as above |
 | `lazyOwnedCollectionLoad` | `@OwnedCollection` / `@LazyOwnedCollection` loader rejects | `modelName` |

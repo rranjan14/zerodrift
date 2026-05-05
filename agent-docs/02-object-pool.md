@@ -96,8 +96,8 @@ Not all models live fully in the pool. The `LoadStrategy` on each model controls
 | `Instant` | All instances | Bootstrap |
 | `Lazy` | None | On first access via collection or explicit load |
 | `Partial` | Only referenced ones | When a parent model referencing them is loaded |
-| `ExplicitlyRequested` | None | Only when code calls `sm.loadOne(...)` |
-| `Ephemeral` | None | On demand via `loadCollection`/`loadByIds`; never persisted to IDB |
+| `ExplicitlyRequested` | None | Only when code calls `sm.getOrLoadById(...)` |
+| `Ephemeral` | None | On demand via `getOrLoadCollection`/`getOrLoadByIds`; never persisted to IDB |
 
 `FullStore` (for Instant models) loads everything at bootstrap. `PartialStore` (for the rest) loads nothing — instances trickle in on demand and stay in the pool once loaded. `EphemeralStore` (for Ephemeral models) is a no-op — it skips both `loadFromDatabase` and `loadFromServer`, since ephemeral models are loaded on-demand and never touch IDB.
 

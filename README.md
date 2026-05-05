@@ -333,7 +333,7 @@ const teamADrivers = await sm.getOrLoadAll<DriverModel>("DriverModel", {
 });
 ```
 
-`getOrLoadById` / `getOrLoadByIds` / `getOrLoadCollection` are aliases of the older `loadOne` / `loadByIds` / `loadCollection` — both shapes ship for backwards compatibility. `getOrLoadAll` is new; per-strategy: Instant + Ephemeral return the pool snapshot directly (already fully resident); Lazy / Partial / ExplicitlyRequested fetch from the server; Local reads from IDB. Coverage is tracked under a reserved `"*"` sentinel key in the partial-index store, scoped per `syncGroups` set so different scopes are cached independently.
+`getOrLoadById` / `getOrLoadByIds` / `getOrLoadCollection` are the pool-first lookup APIs. `getOrLoadAll` completes the set by loading every instance of a model; per-strategy: Instant + Ephemeral return the pool snapshot directly (already fully resident); Lazy / Partial / ExplicitlyRequested fetch from the server; Local reads from IDB. Coverage is tracked under a reserved `"*"` sentinel key in the partial-index store, scoped per `syncGroups` set so different scopes are cached independently.
 
 For Storybook / test fixtures, two pool-only seed helpers (`sm.seed(modelName, records)` / `sm.seedMany({...})`) accept the same shape as `bootstrapFetcher`'s `models` response — see [`agent-docs/08-react-integration.md`](agent-docs/08-react-integration.md#storybook--testing) for the full pattern.
 
@@ -459,9 +459,9 @@ Two layers of compound parity, both opt-in:
 
 1. **Client-side auto-derived covering indexes** — `RefCollection`s walk the parent's FK graph (`transientIndexDepth`, default 3) and emit additional partial-index queries when the child denormalizes a parent FK. Adopters need only set `@Property({ indexed: true })` on the denormalized field. No protocol change. See [`agent-docs/04-lazy-loading.md`](agent-docs/04-lazy-loading.md).
 
-2. **Server-side compound queries** — when ≥ `compoundIndexFetchThreshold` (default 5) concurrent `loadCollection` requests share a parent FK value, the engine collapses them into one dotted-path query (e.g. 50 `Comment[taskId=Tx]` → one `Comment[taskId.projectId=P1]`). The server resolves the dotted path via a JOIN and returns the union; per-waiter filtering narrows each caller's slice. Opt in with `serverSupportsCompoundIndexKeys: true`; backends without JOIN support keep per-parent fan-out.
+2. **Server-side compound queries** — when ≥ `compoundIndexFetchThreshold` (default 5) concurrent `getOrLoadCollection` requests share a parent FK value, the engine collapses them into one dotted-path query (e.g. 50 `Comment[taskId=Tx]` → one `Comment[taskId.projectId=P1]`). The server resolves the dotted path via a JOIN and returns the union; per-waiter filtering narrows each caller's slice. Opt in with `serverSupportsCompoundIndexKeys: true`; backends without JOIN support keep per-parent fan-out.
 
-   **Coverage caching.** After the compound fetch lands, the full response bag is written to IDB and the compound key is recorded in the partial-index store. A future direct `loadCollection("Comment", "taskId", T_new)` short-circuits when `T_new`'s parent FK matches the recorded compound's value — no redundant network call.
+   **Coverage caching.** After the compound fetch lands, the full response bag is written to IDB and the compound key is recorded in the partial-index store. A future direct `getOrLoadCollection("Comment", "taskId", T_new)` short-circuits when `T_new`'s parent FK matches the recorded compound's value — no redundant network call.
 
 ```ts
 new StoreManager({

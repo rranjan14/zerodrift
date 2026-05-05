@@ -221,7 +221,7 @@ export function EphemeralProperty() {
 //   @Reference("Team", { idField: "parentTeamId" }) declare team: Team;
 //
 // `@Reference`     — eager: makeModelObservable() pulls the referenced model
-//                    into the pool via storeManager.loadOne so the accessor
+//                    into the pool via storeManager.getOrLoadById so the accessor
 //                    doesn't return null on first read.
 // `@LazyReference` — lazy: the getter returns whatever is in the pool right
 //                    now (or null); no automatic load.

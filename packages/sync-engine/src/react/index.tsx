@@ -232,7 +232,7 @@ export function useModel<T extends BaseModel = BaseModel>(
   );
 
   const { isLoading, error, reload } = useLoader(
-    () => sm.loadOne(modelName, id!),
+    () => sm.getOrLoadById(modelName, id!),
     ready && id != null,
     `${modelName}:${id ?? ""}`,
     // Skip the load when the pool already has the entry — instant models render
@@ -274,7 +274,7 @@ export function useModels<T extends BaseModel = BaseModel>(
   }, [all, idsKey]);
 
   const { isLoading, error, reload } = useLoader(
-    () => sm.loadByIds(modelName, ids ?? []),
+    () => sm.getOrLoadByIds(modelName, ids ?? []),
     ready && ids != null && ids.length > 0,
     `${modelName}:${idsKey}`,
     () => ids != null && ids.some((id) => pool.getById(modelName, id) == null),
@@ -289,7 +289,7 @@ export function useModels<T extends BaseModel = BaseModel>(
 }
 
 /** Reactive list of models matching a foreign-key index, e.g. `teamId === id`.
- * Fires `loadCollection` on first use; subsequent calls hit the cache. */
+ * Fires `getOrLoadCollection` on first use; subsequent calls hit the cache. */
 export function useIndexedCollection<T extends BaseModel = BaseModel>(
   modelName: string,
   indexKey: string,
@@ -309,7 +309,7 @@ export function useIndexedCollection<T extends BaseModel = BaseModel>(
   }, [all, indexKey, value, hasValue]);
 
   const { isLoading, error, reload } = useLoader(
-    () => sm.loadCollection(modelName, indexKey, value!),
+    () => sm.getOrLoadCollection(modelName, indexKey, value!),
     ready && hasValue,
     `${modelName}:${indexKey}:${value ?? ""}`,
     () => hasValue && !sm.isCollectionLoaded(modelName, indexKey, value!),
@@ -324,7 +324,7 @@ export function useIndexedCollection<T extends BaseModel = BaseModel>(
 }
 
 /** Reactive list of models matching ANY of `values` on a foreign-key index.
- * Fans out `loadCollection` per value in parallel; coverage is tracked
+ * Fans out `getOrLoadCollection` per value in parallel; coverage is tracked
  * per `(name, indexKey, value)` so re-renders don't re-fetch buckets that
  * are already covered. The `values` array is compared by content so inline
  * literals don't trigger re-fetches.
@@ -358,7 +358,7 @@ export function useIndexedCollections<T extends BaseModel = BaseModel>(
   const { isLoading, error, reload } = useLoader(
     async () => {
       await Promise.all(
-        (values ?? []).map((v) => sm.loadCollection(modelName, indexKey, v)),
+        (values ?? []).map((v) => sm.getOrLoadCollection(modelName, indexKey, v)),
       );
     },
     ready && hasValues,

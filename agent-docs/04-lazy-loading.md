@@ -28,11 +28,11 @@ export class DocumentContent extends BaseModel { ... }
 | `Instant` | Yes — all instances | Bootstrap |
 | `Lazy` | No | First access via collection or hook |
 | `Partial` | No | When a parent referencing them is viewed |
-| `ExplicitlyRequested` | No | Only when code calls `sm.loadOne(modelName, id)` |
+| `ExplicitlyRequested` | No | Only when code calls `sm.getOrLoadById(modelName, id)` |
 
 `Instant` models get a `FullStore`. All others get a `PartialStore`. The `FullStore` loads everything at bootstrap; the `PartialStore` starts empty and fills on demand.
 
-**`Instant` is the only strategy that ships in a full-bootstrap payload** — every full-bootstrap call (initial, deferred phase 2, sync-group activation, newly-added-models follow-up) sends `onlyModels` restricted to Instant. Lazy / Partial / ExplicitlyRequested models load via `loadCollection` / `loadOne`; Local stays in IDB only; Ephemeral lives in the pool and is fed by SSE.
+**`Instant` is the only strategy that ships in a full-bootstrap payload** — every full-bootstrap call (initial, deferred phase 2, sync-group activation, newly-added-models follow-up) sends `onlyModels` restricted to Instant. Lazy / Partial / ExplicitlyRequested models load via `getOrLoadCollection` / `getOrLoadById`; Local stays in IDB only; Ephemeral lives in the pool and is fed by SSE.
 
 **The critical insight:** for `Partial` and `Lazy` models, records exist in IndexedDB but their hydrated instances don't exist in the ObjectPool or in the heap. They only enter the heap when explicitly loaded.
 
@@ -162,13 +162,13 @@ Each relationship has an eager and a lazy variant. The eager decorator (no prefi
 
 When the parent is hydrated and `makeModelObservable()` runs, each eager relationship fires its load immediately:
 
-- `@Reference` → `storeManager.loadOne(referenceTo, id)` so accessors don't return `null` on first read.
+- `@Reference` → `storeManager.getOrLoadById(referenceTo, id)` so accessors don't return `null` on first read.
 - `@ReferenceCollection` → `collection.load()` to pull all matching children into the pool.
 - `@OwnedCollection` → `collection.load()` over the current id array.
 
 The kick-off is fire-and-forget — `makeModelObservable()` is synchronous, so observers re-render when each collection's state transitions to `Loaded`. Tests that need to await completion can call `await collection.load()`, which is idempotent and returns the in-flight Promise when one is already running.
 
-**Recursion is automatic.** An eager `@ReferenceCollection` on `Owner` triggers `loadCollection` for the children → each child arrives via `objectPool.hydrateAndPut` → that calls the child's `makeModelObservable` → any eager relationships *on the child* fire their own loads. The recursion is bounded because `hydrateAndPut` short-circuits when an instance is already in the pool, and `loadOne` short-circuits the same way.
+**Recursion is automatic.** An eager `@ReferenceCollection` on `Owner` triggers `getOrLoadCollection` for the children → each child arrives via `objectPool.hydrateAndPut` → that calls the child's `makeModelObservable` → any eager relationships *on the child* fire their own loads. The recursion is bounded because `hydrateAndPut` short-circuits when an instance is already in the pool, and `getOrLoadById` short-circuits the same way.
 
 **When to use eager.** Reach for the eager decorator when a parent is useless without its children (a Document without its Blocks, an Order without its LineItems) and you want a single `await` to settle the whole subtree. Use `@Lazy*` for relationships that are only sometimes opened (a Team's full Issue list when most pages only need a count).
 

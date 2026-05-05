@@ -62,8 +62,8 @@ describe("Covering index values on @LazyReferenceCollection", () => {
     expect(queries).toEqual([{ key: "projectId", value: "p1" }]);
   });
 
-  it("loads each axis as a separate loadCollection call to pre-warm the pool", async () => {
-    const loadCollection = vi.spyOn(manager, "loadCollection");
+  it("loads each axis as a separate getOrLoadCollection call to pre-warm the pool", async () => {
+    const getOrLoadCollection = vi.spyOn(manager, "getOrLoadCollection");
 
     // Seed IDB with two TestAlertNotes — one matches alertId, the other matches
     // only the covering groupId. The covering load brings the second into the
@@ -82,8 +82,8 @@ describe("Covering index values on @LazyReferenceCollection", () => {
 
     await alert.notes.load();
 
-    // One loadCollection call per covering value.
-    const calls = loadCollection.mock.calls.map(
+    // One getOrLoadCollection call per covering value.
+    const calls = getOrLoadCollection.mock.calls.map(
       ([modelName, indexKey, value]) => ({ modelName, indexKey, value }),
     );
     expect(calls).toContainEqual({

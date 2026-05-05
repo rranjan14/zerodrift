@@ -248,9 +248,9 @@ describe("StoreManager", () => {
     });
   });
 
-  // ── loadCollection — onDemandFetcher ──────────────────────────────────────
+  // ── getOrLoadCollection — onDemandFetcher ──────────────────────────────────────
 
-  describe("loadCollection() with onDemandFetcher", () => {
+  describe("getOrLoadCollection() with onDemandFetcher", () => {
     type OnDemandFetcher = (
       modelName: string,
       indexKey: string,
@@ -279,7 +279,7 @@ describe("StoreManager", () => {
         { id: "a2", taskId: "t1", text: "second" },
       ]);
 
-      const results = await managerWithFetcher.loadCollection(
+      const results = await managerWithFetcher.getOrLoadCollection(
         "TestActivity",
         "taskId",
         "t1",
@@ -304,15 +304,15 @@ describe("StoreManager", () => {
         { id: "a1", taskId: "t1", text: "x" },
       ]);
 
-      await managerWithFetcher.loadCollection("TestActivity", "taskId", "t1");
-      await managerWithFetcher.loadCollection("TestActivity", "taskId", "t1");
+      await managerWithFetcher.getOrLoadCollection("TestActivity", "taskId", "t1");
+      await managerWithFetcher.getOrLoadCollection("TestActivity", "taskId", "t1");
 
       expect(onDemandFetcher).toHaveBeenCalledTimes(1);
     });
 
     it("calls onDemandFetcher separately for different parent IDs", async () => {
-      await managerWithFetcher.loadCollection("TestActivity", "taskId", "t1");
-      await managerWithFetcher.loadCollection("TestActivity", "taskId", "t2");
+      await managerWithFetcher.getOrLoadCollection("TestActivity", "taskId", "t1");
+      await managerWithFetcher.getOrLoadCollection("TestActivity", "taskId", "t2");
 
       expect(onDemandFetcher).toHaveBeenCalledTimes(2);
       expect(onDemandFetcher).toHaveBeenCalledWith(
@@ -328,7 +328,7 @@ describe("StoreManager", () => {
     });
 
     it("skips onDemandFetcher for Instant models", async () => {
-      await managerWithFetcher.loadCollection(
+      await managerWithFetcher.getOrLoadCollection(
         "TestTask",
         "projectId",
         "proj-1",
@@ -342,7 +342,7 @@ describe("StoreManager", () => {
         { id: "a1", taskId: "t1", text: "persisted" },
       ]);
 
-      await managerWithFetcher.loadCollection("TestActivity", "taskId", "t1");
+      await managerWithFetcher.getOrLoadCollection("TestActivity", "taskId", "t1");
 
       const idbRecord = await managerWithFetcher.database.readModel(
         "TestActivity",
@@ -362,7 +362,7 @@ describe("StoreManager", () => {
         { id: "a-server", taskId: "t1", text: "from server" },
       ]);
 
-      const results = await managerWithFetcher.loadCollection(
+      const results = await managerWithFetcher.getOrLoadCollection(
         "TestActivity",
         "taskId",
         "t1",
@@ -381,7 +381,7 @@ describe("StoreManager", () => {
       // onDemandFetcher returns nothing new — server has nothing beyond what SSE wrote
       onDemandFetcher.mockResolvedValueOnce([]);
 
-      const results = await managerWithFetcher.loadCollection(
+      const results = await managerWithFetcher.getOrLoadCollection(
         "TestActivity",
         "taskId",
         "t1",
@@ -405,7 +405,7 @@ describe("StoreManager", () => {
         { id: "a-server-2", taskId: "t1", text: "server 2" },
       ]);
 
-      const results = await managerWithFetcher.loadCollection(
+      const results = await managerWithFetcher.getOrLoadCollection(
         "TestActivity",
         "taskId",
         "t1",
@@ -416,9 +416,9 @@ describe("StoreManager", () => {
     });
   });
 
-  // ── loadOne — onDemandFetcher ─────────────────────────────────────────────
+  // ── getOrLoadById — onDemandFetcher ─────────────────────────────────────────────
 
-  describe("loadOne() with onDemandFetcher", () => {
+  describe("getOrLoadById() with onDemandFetcher", () => {
     type OnDemandFetcher = (
       modelName: string,
       indexKey: string,
@@ -446,7 +446,7 @@ describe("StoreManager", () => {
       activity.hydrate({ id: "a1", taskId: "t1", text: "in pool" });
       addToPool(managerWithFetcher, "TestActivity", activity);
 
-      const result = await managerWithFetcher.loadOne("TestActivity", "a1");
+      const result = await managerWithFetcher.getOrLoadById("TestActivity", "a1");
 
       expect(result).toBe(activity);
       expect(onDemandFetcher).not.toHaveBeenCalled();
@@ -457,7 +457,7 @@ describe("StoreManager", () => {
         { id: "a1", taskId: "t1", text: "from server" },
       ]);
 
-      await managerWithFetcher.loadOne("TestActivity", "a1");
+      await managerWithFetcher.getOrLoadById("TestActivity", "a1");
 
       expect(onDemandFetcher).toHaveBeenCalledWith("TestActivity", "id", "a1");
     });
@@ -467,7 +467,7 @@ describe("StoreManager", () => {
         { id: "a1", taskId: "t1", text: "fetched" },
       ]);
 
-      const result = await managerWithFetcher.loadOne("TestActivity", "a1");
+      const result = await managerWithFetcher.getOrLoadById("TestActivity", "a1");
 
       expect(result).not.toBeNull();
       expect(result!.id).toBe("a1");
@@ -481,7 +481,7 @@ describe("StoreManager", () => {
         { id: "a1", taskId: "t1", text: "persisted" },
       ]);
 
-      await managerWithFetcher.loadOne("TestActivity", "a1");
+      await managerWithFetcher.getOrLoadById("TestActivity", "a1");
 
       const idbRecord = await managerWithFetcher.database.readModel(
         "TestActivity",
@@ -496,15 +496,15 @@ describe("StoreManager", () => {
         { id: "a1", taskId: "t1", text: "x" },
       ]);
 
-      await managerWithFetcher.loadOne("TestActivity", "a1");
-      await managerWithFetcher.loadOne("TestActivity", "a1");
+      await managerWithFetcher.getOrLoadById("TestActivity", "a1");
+      await managerWithFetcher.getOrLoadById("TestActivity", "a1");
 
       expect(onDemandFetcher).toHaveBeenCalledTimes(1);
     });
 
     it("calls fetcher separately for different IDs", async () => {
-      await managerWithFetcher.loadOne("TestActivity", "a1");
-      await managerWithFetcher.loadOne("TestActivity", "a2");
+      await managerWithFetcher.getOrLoadById("TestActivity", "a1");
+      await managerWithFetcher.getOrLoadById("TestActivity", "a2");
 
       expect(onDemandFetcher).toHaveBeenCalledTimes(2);
       expect(onDemandFetcher).toHaveBeenCalledWith("TestActivity", "id", "a1");
@@ -514,7 +514,7 @@ describe("StoreManager", () => {
     it("returns null when fetcher returns empty and record is not in IDB", async () => {
       onDemandFetcher.mockResolvedValueOnce([]);
 
-      const result = await managerWithFetcher.loadOne(
+      const result = await managerWithFetcher.getOrLoadById(
         "TestActivity",
         "missing",
       );
@@ -526,33 +526,33 @@ describe("StoreManager", () => {
       onDemandFetcher.mockResolvedValueOnce([
         { id: "a1", taskId: "t1", text: "initial" },
       ]);
-      await managerWithFetcher.loadOne("TestActivity", "a1");
+      await managerWithFetcher.getOrLoadById("TestActivity", "a1");
 
       // Evict from pool to simulate memory pressure
       managerWithFetcher.objectPool.remove("TestActivity", "a1");
 
-      const result = await managerWithFetcher.loadOne("TestActivity", "a1");
+      const result = await managerWithFetcher.getOrLoadById("TestActivity", "a1");
 
       expect(result).not.toBeNull();
       expect(onDemandFetcher).toHaveBeenCalledTimes(1); // not called again
     });
 
     it("skips fetcher when record already exists in IDB from bootstrap or SSE", async () => {
-      // Simulate a record written to IDB before loadOne is ever called (e.g. bootstrap or SSE)
+      // Simulate a record written to IDB before getOrLoadById is ever called (e.g. bootstrap or SSE)
       await managerWithFetcher.database.writeModels("TestActivity", [
         { id: "a1", taskId: "t1", text: "pre-seeded" },
       ]);
 
-      const result = await managerWithFetcher.loadOne("TestActivity", "a1");
+      const result = await managerWithFetcher.getOrLoadById("TestActivity", "a1");
 
       expect(result).not.toBeNull();
       expect(onDemandFetcher).not.toHaveBeenCalled();
     });
   });
 
-  // ── loadByIds — onDemandBatchFetcher ─────────────────────────────────────
+  // ── getOrLoadByIds — onDemandBatchFetcher ─────────────────────────────────────
 
-  describe("loadByIds() with onDemandBatchFetcher", () => {
+  describe("getOrLoadByIds() with onDemandBatchFetcher", () => {
     type OnDemandBatchFetcher = (
       modelName: string,
       ids: string[],
@@ -575,7 +575,7 @@ describe("StoreManager", () => {
     });
 
     it("returns empty array for empty input", async () => {
-      const results = await managerWithFetcher.loadByIds("TestActivity", []);
+      const results = await managerWithFetcher.getOrLoadByIds("TestActivity", []);
       expect(results).toHaveLength(0);
       expect(onDemandBatchFetcher).not.toHaveBeenCalled();
     });
@@ -585,7 +585,7 @@ describe("StoreManager", () => {
       a1.hydrate({ id: "a1", taskId: "t1", text: "pooled" });
       addToPool(managerWithFetcher, "TestActivity", a1);
 
-      const results = await managerWithFetcher.loadByIds("TestActivity", [
+      const results = await managerWithFetcher.getOrLoadByIds("TestActivity", [
         "a1",
       ]);
 
@@ -599,7 +599,7 @@ describe("StoreManager", () => {
         { id: "a1", taskId: "t1", text: "idb-only" },
       ]);
 
-      const results = await managerWithFetcher.loadByIds("TestActivity", [
+      const results = await managerWithFetcher.getOrLoadByIds("TestActivity", [
         "a1",
       ]);
 
@@ -614,7 +614,7 @@ describe("StoreManager", () => {
         { id: "a2", taskId: "t1", text: "two" },
       ]);
 
-      const results = await managerWithFetcher.loadByIds("TestActivity", [
+      const results = await managerWithFetcher.getOrLoadByIds("TestActivity", [
         "a1",
         "a2",
       ]);
@@ -640,7 +640,7 @@ describe("StoreManager", () => {
         { id: "a3", taskId: "t1", text: "server" },
       ]);
 
-      const results = await managerWithFetcher.loadByIds("TestActivity", [
+      const results = await managerWithFetcher.getOrLoadByIds("TestActivity", [
         "a1",
         "a2",
         "a3",
@@ -655,7 +655,7 @@ describe("StoreManager", () => {
         { id: "a1", taskId: "t1", text: "fetched" },
       ]);
 
-      await managerWithFetcher.loadByIds("TestActivity", ["a1"]);
+      await managerWithFetcher.getOrLoadByIds("TestActivity", ["a1"]);
 
       expect(
         managerWithFetcher.objectPool.getById("TestActivity", "a1"),
@@ -667,7 +667,7 @@ describe("StoreManager", () => {
         { id: "a1", taskId: "t1", text: "persisted" },
       ]);
 
-      await managerWithFetcher.loadByIds("TestActivity", ["a1"]);
+      await managerWithFetcher.getOrLoadByIds("TestActivity", ["a1"]);
 
       const idbRecord = await managerWithFetcher.database.readModel(
         "TestActivity",
@@ -682,8 +682,8 @@ describe("StoreManager", () => {
         { id: "a1", taskId: "t1", text: "x" },
       ]);
 
-      await managerWithFetcher.loadByIds("TestActivity", ["a1"]);
-      await managerWithFetcher.loadByIds("TestActivity", ["a1"]);
+      await managerWithFetcher.getOrLoadByIds("TestActivity", ["a1"]);
+      await managerWithFetcher.getOrLoadByIds("TestActivity", ["a1"]);
 
       expect(onDemandBatchFetcher).toHaveBeenCalledTimes(1);
     });
@@ -693,7 +693,7 @@ describe("StoreManager", () => {
         { id: "a1", taskId: "t1", text: "found" },
       ]);
 
-      const results = await managerWithFetcher.loadByIds("TestActivity", [
+      const results = await managerWithFetcher.getOrLoadByIds("TestActivity", [
         "a1",
         "a2",
       ]);
@@ -703,9 +703,9 @@ describe("StoreManager", () => {
     });
   });
 
-  // ── loadByIds — fallback to onDemandFetcher ───────────────────────────────
+  // ── getOrLoadByIds — fallback to onDemandFetcher ───────────────────────────────
 
-  describe("loadByIds() fallback to onDemandFetcher", () => {
+  describe("getOrLoadByIds() fallback to onDemandFetcher", () => {
     type OnDemandFetcher = (
       modelName: string,
       indexKey: string,
@@ -728,12 +728,12 @@ describe("StoreManager", () => {
       await managerWithFetcher.teardown();
     });
 
-    it("falls back to individual loadOne calls when no batch fetcher is configured", async () => {
+    it("falls back to individual getOrLoadById calls when no batch fetcher is configured", async () => {
       onDemandFetcher
         .mockResolvedValueOnce([{ id: "a1", taskId: "t1", text: "one" }])
         .mockResolvedValueOnce([{ id: "a2", taskId: "t1", text: "two" }]);
 
-      const results = await managerWithFetcher.loadByIds("TestActivity", [
+      const results = await managerWithFetcher.getOrLoadByIds("TestActivity", [
         "a1",
         "a2",
       ]);
@@ -745,15 +745,15 @@ describe("StoreManager", () => {
     });
   });
 
-  // ── loadByIds — no fetcher ────────────────────────────────────────────────
+  // ── getOrLoadByIds — no fetcher ────────────────────────────────────────────────
 
-  describe("loadByIds() without fetcher", () => {
+  describe("getOrLoadByIds() without fetcher", () => {
     it("returns models present in pool", async () => {
       const a1 = new TestActivity();
       a1.hydrate({ id: "a1", taskId: "t1", text: "pooled" });
       addToPool(manager, "TestActivity", a1);
 
-      const results = await manager.loadByIds("TestActivity", ["a1"]);
+      const results = await manager.getOrLoadByIds("TestActivity", ["a1"]);
 
       expect(results).toHaveLength(1);
       expect(results[0]).toBe(a1);
@@ -764,14 +764,14 @@ describe("StoreManager", () => {
         { id: "a1", taskId: "t1", text: "idb" },
       ]);
 
-      const results = await manager.loadByIds("TestActivity", ["a1"]);
+      const results = await manager.getOrLoadByIds("TestActivity", ["a1"]);
 
       expect(results).toHaveLength(1);
       expect(results[0].id).toBe("a1");
     });
 
     it("omits IDs not found anywhere", async () => {
-      const results = await manager.loadByIds("TestActivity", ["ghost"]);
+      const results = await manager.getOrLoadByIds("TestActivity", ["ghost"]);
       expect(results).toHaveLength(0);
     });
 
@@ -783,7 +783,7 @@ describe("StoreManager", () => {
       }
 
       // Request in non-sequential order to prove results match request, not storage
-      const results = await manager.loadByIds("TestActivity", [
+      const results = await manager.getOrLoadByIds("TestActivity", [
         "a3",
         "a1",
         "a2",
@@ -793,7 +793,7 @@ describe("StoreManager", () => {
     });
 
     it("returns empty array for an unregistered model name", async () => {
-      const results = await manager.loadByIds("UnknownModel", ["x1"]);
+      const results = await manager.getOrLoadByIds("UnknownModel", ["x1"]);
       expect(results).toHaveLength(0);
     });
 
@@ -802,22 +802,22 @@ describe("StoreManager", () => {
         { id: "a1", taskId: "t1", text: "dedup" },
       ]);
 
-      const results = await manager.loadByIds("TestActivity", ["a1", "a1"]);
+      const results = await manager.getOrLoadByIds("TestActivity", ["a1", "a1"]);
 
       expect(results).toHaveLength(2);
       expect(results[0]).toBe(results[1]);
     });
   });
 
-  // ── loadOne — no fetcher ───────────────────────────────────────────────────
+  // ── getOrLoadById — no fetcher ───────────────────────────────────────────────────
 
-  describe("loadOne() without onDemandFetcher", () => {
+  describe("getOrLoadById() without onDemandFetcher", () => {
     it("returns model from pool", async () => {
       const activity = new TestActivity();
       activity.hydrate({ id: "a1", taskId: "t1", text: "pooled" });
       addToPool(manager, "TestActivity", activity);
 
-      const result = await manager.loadOne("TestActivity", "a1");
+      const result = await manager.getOrLoadById("TestActivity", "a1");
 
       expect(result).toBe(activity);
     });
@@ -827,14 +827,14 @@ describe("StoreManager", () => {
         { id: "a1", taskId: "t1", text: "idb" },
       ]);
 
-      const result = await manager.loadOne("TestActivity", "a1");
+      const result = await manager.getOrLoadById("TestActivity", "a1");
 
       expect(result).not.toBeNull();
       expect(result!.id).toBe("a1");
     });
 
     it("returns null when not in pool or IDB", async () => {
-      const result = await manager.loadOne("TestActivity", "ghost");
+      const result = await manager.getOrLoadById("TestActivity", "ghost");
 
       expect(result).toBeNull();
     });
@@ -896,7 +896,7 @@ describe("StoreManager", () => {
       onDemandFetcher.mockResolvedValueOnce([
         { id: "a1", taskId: "t1", text: "original" },
       ]);
-      await sm.loadCollection("TestActivity", "taskId", "t1");
+      await sm.getOrLoadCollection("TestActivity", "taskId", "t1");
       expect(onDemandFetcher).toHaveBeenCalledTimes(1);
 
       const originalRef = sm.objectPool.getById("TestActivity", "a1");
@@ -926,7 +926,7 @@ describe("StoreManager", () => {
         { id: "a1", taskId: "t1", text: "x" },
         { id: "a2", taskId: "t1", text: "y" },
       ]);
-      await sm.loadCollection("TestActivity", "taskId", "t1");
+      await sm.getOrLoadCollection("TestActivity", "taskId", "t1");
       expect(sm.objectPool.getAll("TestActivity")).toHaveLength(2);
 
       onDemandFetcher.mockResolvedValueOnce([
@@ -946,7 +946,7 @@ describe("StoreManager", () => {
       onDemandFetcher.mockResolvedValueOnce([
         { id: "m1", value: 10, label: "cpu" },
       ]);
-      await sm.loadCollection("TestMetric", "label", "cpu");
+      await sm.getOrLoadCollection("TestMetric", "label", "cpu");
       expect(
         (sm.objectPool.getById("TestMetric", "m1") as TestMetric).value,
       ).toBe(10);
@@ -994,7 +994,7 @@ describe("StoreManager", () => {
       onDemandBatchFetcher.mockResolvedValueOnce([
         { id: "a1", taskId: "t1", text: "original" },
       ]);
-      await sm.loadByIds("TestActivity", ["a1"]);
+      await sm.getOrLoadByIds("TestActivity", ["a1"]);
       const originalRef = sm.objectPool.getById("TestActivity", "a1");
       expect((originalRef as TestActivity).text).toBe("original");
 
@@ -1020,7 +1020,7 @@ describe("StoreManager", () => {
       onDemandBatchFetcher.mockResolvedValueOnce([
         { id: "m1", value: 10, label: "cpu" },
       ]);
-      await sm.loadByIds("TestMetric", ["m1"]);
+      await sm.getOrLoadByIds("TestMetric", ["m1"]);
       expect(
         (sm.objectPool.getById("TestMetric", "m1") as TestMetric).value,
       ).toBe(10);
@@ -1064,12 +1064,12 @@ describe("StoreManager", () => {
       onDemandFetcher.mockResolvedValueOnce([
         { id: "a1", taskId: "t1", text: "first" },
       ]);
-      await sm.loadCollection("TestActivity", "taskId", "t1");
+      await sm.getOrLoadCollection("TestActivity", "taskId", "t1");
 
       onDemandFetcher.mockResolvedValueOnce([
         { id: "a2", taskId: "t2", text: "second" },
       ]);
-      await sm.loadCollection("TestActivity", "taskId", "t2");
+      await sm.getOrLoadCollection("TestActivity", "taskId", "t2");
 
       expect(onDemandFetcher).toHaveBeenCalledTimes(2);
 
@@ -1107,13 +1107,13 @@ describe("StoreManager", () => {
       onDemandFetcher.mockResolvedValueOnce([
         { id: "a1", taskId: "t1", text: "coll" },
       ]);
-      await smWithBatch.loadCollection("TestActivity", "taskId", "t1");
+      await smWithBatch.getOrLoadCollection("TestActivity", "taskId", "t1");
 
       // Load an individual model by ID (not part of any collection)
       onDemandBatchFetcher.mockResolvedValueOnce([
         { id: "a9", taskId: "t9", text: "individual" },
       ]);
-      await smWithBatch.loadByIds("TestActivity", ["a9"]);
+      await smWithBatch.getOrLoadByIds("TestActivity", ["a9"]);
       expect(
         smWithBatch.objectPool.getById("TestActivity", "a9"),
       ).toBeDefined();
@@ -1144,7 +1144,7 @@ describe("StoreManager", () => {
         { id: "a1", taskId: "t1", text: "x" },
         { id: "a2", taskId: "t1", text: "y" },
       ]);
-      await sm.loadCollection("TestActivity", "taskId", "t1");
+      await sm.getOrLoadCollection("TestActivity", "taskId", "t1");
       expect(sm.objectPool.getAll("TestActivity")).toHaveLength(2);
 
       // Server now returns only one record (a2 was deleted)

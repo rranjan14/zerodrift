@@ -482,59 +482,59 @@ describe("createDb — archive", () => {
 // ---------------------------------------------------------------------------
 
 describe("createDb — async readers", () => {
-  it("get(id) delegates to StoreManager.loadOne", async () => {
-    const loadOne = vi.spyOn(sm, "loadOne").mockResolvedValue(null);
+  it("get(id) delegates to StoreManager.getOrLoadById", async () => {
+    const getOrLoadById = vi.spyOn(sm, "getOrLoadById").mockResolvedValue(null);
 
     const result = await db.dbTeam.get("team-load-1");
 
-    expect(loadOne).toHaveBeenCalledWith("DbTeam", "team-load-1");
+    expect(getOrLoadById).toHaveBeenCalledWith("DbTeam", "team-load-1");
     expect(result).toBeNull();
   });
 
-  it("getByIds delegates to StoreManager.loadByIds", async () => {
-    const loadByIds = vi.spyOn(sm, "loadByIds").mockResolvedValue([]);
+  it("getByIds delegates to StoreManager.getOrLoadByIds", async () => {
+    const getOrLoadByIds = vi.spyOn(sm, "getOrLoadByIds").mockResolvedValue([]);
 
     await db.dbTeam.getByIds(["a", "b"]);
 
-    expect(loadByIds).toHaveBeenCalledWith("DbTeam", ["a", "b"]);
+    expect(getOrLoadByIds).toHaveBeenCalledWith("DbTeam", ["a", "b"]);
   });
 
-  it("getByIndex routes through StoreManager.loadCollection with the typed key", async () => {
-    const loadCollection = vi
-      .spyOn(sm, "loadCollection")
+  it("getByIndex routes through StoreManager.getOrLoadCollection with the typed key", async () => {
+    const getOrLoadCollection = vi
+      .spyOn(sm, "getOrLoadCollection")
       .mockResolvedValue([]);
 
     await db.dbIssue.getByIndex("teamId", "team-idx");
 
-    expect(loadCollection).toHaveBeenCalledWith(
+    expect(getOrLoadCollection).toHaveBeenCalledWith(
       "DbIssue",
       "teamId",
       "team-idx",
     );
   });
 
-  it("getByIndexValues fans out one loadCollection per value, then returns the deduped union", async () => {
+  it("getByIndexValues fans out one getOrLoadCollection per value, then returns the deduped union", async () => {
     db.dbTeam.create({ id: "team-mv-1", name: "A" });
     db.dbTeam.create({ id: "team-mv-2", name: "B" });
     const i1 = db.dbIssue.create({ id: "issue-mv-1", teamId: "team-mv-1" });
     const i2 = db.dbIssue.create({ id: "issue-mv-2", teamId: "team-mv-2" });
     db.dbIssue.create({ id: "issue-mv-other", teamId: "team-mv-other" });
 
-    const loadCollection = vi.spyOn(sm, "loadCollection");
+    const getOrLoadCollection = vi.spyOn(sm, "getOrLoadCollection");
 
     const result = await db.dbIssue.getByIndexValues("teamId", [
       "team-mv-1",
       "team-mv-2",
     ]);
 
-    expect(loadCollection).toHaveBeenCalledTimes(2);
-    expect(loadCollection).toHaveBeenNthCalledWith(
+    expect(getOrLoadCollection).toHaveBeenCalledTimes(2);
+    expect(getOrLoadCollection).toHaveBeenNthCalledWith(
       1,
       "DbIssue",
       "teamId",
       "team-mv-1",
     );
-    expect(loadCollection).toHaveBeenNthCalledWith(
+    expect(getOrLoadCollection).toHaveBeenNthCalledWith(
       2,
       "DbIssue",
       "teamId",
@@ -545,13 +545,13 @@ describe("createDb — async readers", () => {
     expect(result).toContain(i2);
   });
 
-  it("getByIndexValues with an empty values array resolves to [] without firing loadCollection", async () => {
-    const loadCollection = vi.spyOn(sm, "loadCollection");
+  it("getByIndexValues with an empty values array resolves to [] without firing getOrLoadCollection", async () => {
+    const getOrLoadCollection = vi.spyOn(sm, "getOrLoadCollection");
 
     const result = await db.dbIssue.getByIndexValues("teamId", []);
 
     expect(result).toEqual([]);
-    expect(loadCollection).not.toHaveBeenCalled();
+    expect(getOrLoadCollection).not.toHaveBeenCalled();
   });
 
   it("getByIndexValues dedupes records that match multiple values", async () => {
@@ -582,7 +582,7 @@ describe("createDb — async readers", () => {
   it("get(id) resolves with the pooled record without re-hitting storage", async () => {
     const team = db.dbTeam.create({ id: "team-cache-hit", name: "cached" });
     const result = await db.dbTeam.get("team-cache-hit");
-    // StoreManager.loadOne is itself pool-first, so a pooled record returns
+    // StoreManager.getOrLoadById is itself pool-first, so a pooled record returns
     // the same instance without touching IDB or the network.
     expect(result).toBe(team);
   });

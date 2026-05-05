@@ -10,7 +10,7 @@
  *   2. Records the compound key in `partialIndexCoverage` and the
  *      adapter's persistent index so the coverage survives reload.
  *   3. Derives direct-coverage at read time: a subsequent
- *      `loadCollection("Comment", "taskId", T_new)` short-circuits when
+ *      `getOrLoadCollection("Comment", "taskId", T_new)` short-circuits when
  *      T_new's parent FK matches an existing compound covering's value.
  */
 
@@ -89,11 +89,11 @@ describe("compound coverage caching", () => {
 
     // Five concurrent direct loads — collapses to one compound query.
     const results = await Promise.all([
-      manager.loadCollection("TestActivity", "taskId", "t1"),
-      manager.loadCollection("TestActivity", "taskId", "t2"),
-      manager.loadCollection("TestActivity", "taskId", "t3"),
-      manager.loadCollection("TestActivity", "taskId", "t4"),
-      manager.loadCollection("TestActivity", "taskId", "t5"),
+      manager.getOrLoadCollection("TestActivity", "taskId", "t1"),
+      manager.getOrLoadCollection("TestActivity", "taskId", "t2"),
+      manager.getOrLoadCollection("TestActivity", "taskId", "t3"),
+      manager.getOrLoadCollection("TestActivity", "taskId", "t4"),
+      manager.getOrLoadCollection("TestActivity", "taskId", "t5"),
     ]);
 
     expect(fetcher).toHaveBeenCalledTimes(1);
@@ -126,7 +126,7 @@ describe("compound coverage caching", () => {
 
     // Direct load for t6 short-circuits (covered by the compound key);
     // the fetcher is NOT called a second time.
-    const t6Result = await manager.loadCollection(
+    const t6Result = await manager.getOrLoadCollection(
       "TestActivity",
       "taskId",
       "t6",
@@ -178,7 +178,7 @@ describe("compound coverage caching", () => {
     });
     await manager.bootstrap();
 
-    await manager.loadCollection("TestActivity", "taskId", "lonely");
+    await manager.getOrLoadCollection("TestActivity", "taskId", "lonely");
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
@@ -224,7 +224,7 @@ describe("compound coverage caching", () => {
     await manager.bootstrap();
     hydrateTask(manager, "t-other", "P2");
 
-    await manager.loadCollection("TestActivity", "taskId", "t-other");
+    await manager.getOrLoadCollection("TestActivity", "taskId", "t-other");
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 });

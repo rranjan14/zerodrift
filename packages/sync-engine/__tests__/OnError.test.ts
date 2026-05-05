@@ -34,7 +34,7 @@ afterEach(async () => {
 });
 
 describe("onError", () => {
-  it("fires for eagerReferenceLoad when storeManager.loadOne rejects", async () => {
+  it("fires for eagerReferenceLoad when storeManager.getOrLoadById rejects", async () => {
     const onError = vi.fn();
     const onDemandFetcher = vi
       .fn()
@@ -50,7 +50,7 @@ describe("onError", () => {
     await manager.bootstrap();
 
     // TestEagerHolder.refUserId is wired to TestUser via eager @Reference.
-    // Hydrating a holder triggers loadOne("TestUser", "u-missing"), which
+    // Hydrating a holder triggers getOrLoadById("TestUser", "u-missing"), which
     // routes to onDemandFetcher (rejects) → emitError fires.
     const meta = ModelRegistry.getModelMeta("TestEagerHolder")!;
     manager.objectPool.hydrateAndPut("TestEagerHolder", meta, {
@@ -312,7 +312,7 @@ describe("onError", () => {
       }),
     ).not.toThrow();
 
-    // Wait a tick to let the async loadOne reject without affecting anything.
+    // Wait a tick to let the async getOrLoadById reject without affecting anything.
     await new Promise((r) => setTimeout(r, 5));
   });
 });

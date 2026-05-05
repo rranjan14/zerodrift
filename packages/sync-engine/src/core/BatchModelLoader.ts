@@ -1,6 +1,6 @@
 /**
  * Coalesces concurrent on-demand index queries into a single server call.
- * Used by `StoreManager.loadCollection` when an `onDemandIndexBatchFetcher`
+ * Used by `StoreManager.getOrLoadCollection` when an `onDemandIndexBatchFetcher`
  * is configured; otherwise the per-triple `onDemandFetcher` runs directly.
  */
 
