@@ -101,6 +101,7 @@ const RESERVED_DB_KEYS: ReadonlySet<string> = new Set([
   "redo",
   "undoDepth",
   "redoDepth",
+  "runUndoable",
 ]);
 
 function validateSchema(schema: SchemaDef): void {

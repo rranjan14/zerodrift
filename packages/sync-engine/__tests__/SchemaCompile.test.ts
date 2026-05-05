@@ -429,7 +429,14 @@ describe("compileSchema — validation failures", () => {
     ).toThrow(/FK "badI\.otherId" is referenced by 2 links/);
   });
 
-  it.each(["batch", "undo", "redo", "undoDepth", "redoDepth"] as const)(
+  it.each([
+    "batch",
+    "undo",
+    "redo",
+    "undoDepth",
+    "redoDepth",
+    "runUndoable",
+  ] as const)(
     "rejects entity key %s — collides with reserved db top-level",
     (reservedKey) => {
       expect(() =>

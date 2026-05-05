@@ -13,7 +13,31 @@ export type FieldRefTarget<F> = F extends FieldBuilder<unknown, infer M>
     : never
   : never;
 
+/** True when `.indexed()` was applied to the builder. */
+export type FieldIsIndexed<F> = F extends FieldBuilder<unknown, infer M>
+  ? M extends { indexed: true }
+    ? true
+    : false
+  : false;
+
 export type EntityKey<S extends SchemaDef> = keyof S["entities"] & string;
+
+/**
+ * Field keys on an entity that were declared with `.indexed()`. Used to
+ * constrain `db.<entity>.loadByIndex(key, value)` so callers can only pass
+ * indexes that actually exist on disk.
+ */
+export type IndexedFieldKeys<
+  S extends SchemaDef,
+  K extends EntityKey<S>,
+> = {
+  [P in keyof EntityFieldsRecord<S, K>]: FieldIsIndexed<
+    EntityFieldsRecord<S, K>[P]
+  > extends true
+    ? P
+    : never;
+}[keyof EntityFieldsRecord<S, K>] &
+  string;
 
 export type EntityFieldsRecord<
   S extends SchemaDef,
@@ -121,7 +145,7 @@ export type InferEntity<S extends SchemaDef, K extends EntityKey<S>> =
  * the caller: id-kind (BaseModel auto-assigns a UUID), defaulted fields,
  * and schema fields explicitly marked optional (e.g. via Zod's `.optional()`).
  */
-type IsOptionalCreateField<F> = F extends FieldBuilder<infer T, infer M>
+type IsOptionalCreateField<F> = F extends FieldBuilder<unknown, infer M>
   ? M extends { kind: "id" } | { default: unknown }
     ? true
     : M extends { optional: true }

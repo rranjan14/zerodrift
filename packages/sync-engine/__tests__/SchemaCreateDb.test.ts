@@ -318,6 +318,211 @@ describe("createDb — batch", () => {
 });
 
 // ---------------------------------------------------------------------------
+// getAll
+// ---------------------------------------------------------------------------
+
+describe("createDb — getAll", () => {
+  it("returns every record currently in the pool for that entity", () => {
+    expect(db.dbTeam.getAll()).toEqual([]);
+
+    const a = db.dbTeam.create({ id: "team-getall-a", name: "A" });
+    const b = db.dbTeam.create({ id: "team-getall-b", name: "B" });
+
+    const teams = db.dbTeam.getAll();
+    expect(teams).toHaveLength(2);
+    expect(teams).toContain(a);
+    expect(teams).toContain(b);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// archive
+// ---------------------------------------------------------------------------
+
+describe("createDb — archive", () => {
+  it("delegates to StoreManager.archiveModel", () => {
+    db.dbTeam.create({ id: "team-archive-1", name: "Soft" });
+    const archive = vi.spyOn(sm, "archiveModel");
+
+    db.dbTeam.archive("team-archive-1");
+
+    expect(archive).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws when the record is not in the pool", () => {
+    expect(() => db.dbTeam.archive("ghost")).toThrow(/no record with id "ghost"/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// async loaders — load / loadByIds / loadByIndex / loadAll / getOrLoad
+// ---------------------------------------------------------------------------
+
+describe("createDb — async loaders", () => {
+  it("load(id) delegates to StoreManager.loadOne", async () => {
+    const loadOne = vi
+      .spyOn(sm, "loadOne")
+      .mockResolvedValue(null);
+
+    const result = await db.dbTeam.load("team-load-1");
+
+    expect(loadOne).toHaveBeenCalledWith("DbTeam", "team-load-1");
+    expect(result).toBeNull();
+  });
+
+  it("loadByIds delegates to StoreManager.loadByIds", async () => {
+    const loadByIds = vi.spyOn(sm, "loadByIds").mockResolvedValue([]);
+
+    await db.dbTeam.loadByIds(["a", "b"]);
+
+    expect(loadByIds).toHaveBeenCalledWith("DbTeam", ["a", "b"]);
+  });
+
+  it("loadByIndex routes through StoreManager.loadCollection with the typed key", async () => {
+    const loadCollection = vi
+      .spyOn(sm, "loadCollection")
+      .mockResolvedValue([]);
+
+    await db.dbIssue.loadByIndex("teamId", "team-idx");
+
+    expect(loadCollection).toHaveBeenCalledWith(
+      "DbIssue",
+      "teamId",
+      "team-idx",
+    );
+  });
+
+  it("loadAll delegates to StoreManager.getOrLoadAll", async () => {
+    const getOrLoadAll = vi
+      .spyOn(sm, "getOrLoadAll")
+      .mockResolvedValue([]);
+
+    await db.dbTeam.loadAll();
+
+    expect(getOrLoadAll).toHaveBeenCalledWith("DbTeam");
+  });
+
+  it("getOrLoad resolves with the pooled record without hitting loadOne", async () => {
+    const team = db.dbTeam.create({ id: "team-cache-hit", name: "cached" });
+    const loadOne = vi.spyOn(sm, "loadOne");
+
+    const result = await db.dbTeam.getOrLoad("team-cache-hit");
+
+    expect(result).toBe(team);
+    expect(loadOne).not.toHaveBeenCalled();
+  });
+
+  it("getOrLoad falls through to loadOne when the record is not in the pool", async () => {
+    const loadOne = vi.spyOn(sm, "loadOne").mockResolvedValue(null);
+
+    const result = await db.dbTeam.getOrLoad("team-cache-miss");
+
+    expect(result).toBeNull();
+    expect(loadOne).toHaveBeenCalledWith("DbTeam", "team-cache-miss");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// refresh / refreshAll
+// ---------------------------------------------------------------------------
+
+describe("createDb — refresh", () => {
+  it("refresh(ids) delegates to StoreManager.refreshModels", async () => {
+    const refreshModels = vi
+      .spyOn(sm, "refreshModels")
+      .mockResolvedValue([]);
+
+    await db.dbTeam.refresh(["a", "b"]);
+
+    expect(refreshModels).toHaveBeenCalledWith("DbTeam", ["a", "b"]);
+  });
+
+  it("refreshAll delegates to StoreManager.refreshAllOfModel", async () => {
+    const refreshAll = vi
+      .spyOn(sm, "refreshAllOfModel")
+      .mockResolvedValue();
+
+    await db.dbTeam.refreshAll();
+
+    expect(refreshAll).toHaveBeenCalledWith("DbTeam");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// record commit interface — save / hasUnsavedChanges / discardUnsavedChanges
+// ---------------------------------------------------------------------------
+
+describe("createDb — record commit interface", () => {
+  it("exposes save / hasUnsavedChanges / discardUnsavedChanges on returned records", () => {
+    const team = db.dbTeam.create({ id: "team-commit-1", name: "v1" });
+    expect(typeof team.save).toBe("function");
+    expect(typeof team.discardUnsavedChanges).toBe("function");
+    expect(team.hasUnsavedChanges).toBe(false);
+  });
+
+  it("imperative writes + save() collapses to one transaction (vs two updates)", () => {
+    const team = db.dbTeam.create({ id: "team-commit-2", name: "v1" });
+    const before = sm.transactionQueue.pendingCount;
+
+    team.name = "v2";
+    team.name = "v3";
+    expect(team.hasUnsavedChanges).toBe(true);
+    team.save();
+
+    expect(team.hasUnsavedChanges).toBe(false);
+    expect(team.name).toBe("v3");
+    expect(sm.transactionQueue.pendingCount).toBe(before + 1);
+  });
+
+  it("discardUnsavedChanges reverts to the last-saved value", () => {
+    const team = db.dbTeam.create({ id: "team-commit-3", name: "saved" });
+    team.name = "scratch";
+    expect(team.hasUnsavedChanges).toBe(true);
+
+    team.discardUnsavedChanges();
+
+    expect(team.hasUnsavedChanges).toBe(false);
+    expect(team.name).toBe("saved");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runUndoable
+// ---------------------------------------------------------------------------
+
+describe("createDb — runUndoable", () => {
+  it("delegates to StoreManager.runUndoable and returns the wrapped value", async () => {
+    const runUndoable = vi
+      .spyOn(sm, "runUndoable")
+      .mockResolvedValue("change-log-1");
+
+    const result = await db.runUndoable(async () => "change-log-1", {
+      actionType: "publish",
+    });
+
+    expect(runUndoable).toHaveBeenCalledTimes(1);
+    expect(result).toBe("change-log-1");
+  });
+
+  it("works inside db.batch — the action joins the batch", async () => {
+    const enqueueAction = vi.spyOn(sm.transactionQueue, "enqueueAction");
+
+    // Annotate `fn` so TS picks db.batch's async overload — without it, both
+    // overloads match `async () => {}` and TS picks the sync one, leaving
+    // the returned Promise dangling.
+    const fn: () => Promise<void> = async () => {
+      db.dbTeam.create({ id: "team-undoable-batch", name: "x" });
+      await db.runUndoable(async () => "remote-id");
+    };
+    await db.batch(fn);
+
+    expect(enqueueAction).toHaveBeenCalledTimes(1);
+    const arg = enqueueAction.mock.calls[0][0];
+    expect(arg.changeLogId).toBe("remote-id");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // undo / redo
 // ---------------------------------------------------------------------------
 

@@ -17,7 +17,10 @@ function makeBuilder<T, M extends FieldMeta>(meta: M): FieldBuilder<T, M> {
       return makeBuilder<T | null, M>({ ...meta, nullable: true });
     },
     indexed() {
-      return makeBuilder<T, M>({ ...meta, indexed: true });
+      return makeBuilder<T, Omit<M, "indexed"> & { indexed: true }>({
+        ...meta,
+        indexed: true,
+      } as Omit<M, "indexed"> & { indexed: true });
     },
     default(value: T) {
       return makeBuilder<T, Omit<M, "default"> & { default: T }>({
