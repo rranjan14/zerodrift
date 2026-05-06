@@ -410,6 +410,11 @@ export class StoreManager<TContext = unknown> {
   /** Wired only when `onDemandIndexBatchFetcher` is configured. */
   private indexBatchLoader: BatchModelLoader | null = null;
 
+  /** Set of models touched inside the currently open `atomic()` scope.
+   * `null` when no scope is active. Mutations register themselves via
+   * `registerAtomicTouch` (called from `BaseModel.propertyChanged`). */
+  private activeAtomicScope: Set<BaseModel> | null = null;
+
   constructor(config: StoreManagerConfig<TContext>) {
     this.config = config;
     this.objectPool = new ObjectPool();
@@ -1425,6 +1430,94 @@ export class StoreManager<TContext = unknown> {
   }
   endBatch(id: string) {
     this.transactionQueue.endBatch(id);
+  }
+
+  // ── Atomic API ────────────────────────────────────────────────────────────
+
+  /**
+   * Stage optimistic edits with all-or-nothing local commit semantics.
+   *
+   *   storeManager.atomic(async () => {
+   *     book.optimisticUpdate({ title: "X" });
+   *     issue.optimisticUpdate({ status: "done" });
+   *     await api.call();
+   *   });
+   *
+   * Any model mutated inside `fn` registers with the active scope. On
+   * resolve, every touched model's `save()` is called once (wrapped in a
+   * single batch so undo collapses to one entry). On throw, every touched
+   * model's `discardUnsavedChanges()` runs and the error re-throws.
+   *
+   * SSE deltas that arrive on a touched field during an `await` rebase the
+   * model's `pendingChanges` baseline (see `BaseModel.hydrate`) — the
+   * optimistic value stays visible, and a discard lands on the server's
+   * latest known value rather than a stale pre-edit one.
+   *
+   * `runUndoable` side effects pass through unchanged: their server
+   * mutation is not rolled back when the atomic block throws. Compensate
+   * them yourself in the caller's catch if needed.
+   *
+   * Nested atomic scopes are not supported.
+   */
+  atomic<T>(fn: () => T): T;
+  atomic<T>(fn: () => Promise<T>): Promise<T>;
+  atomic<T>(fn: () => T | Promise<T>): T | Promise<T> {
+    if (this.activeAtomicScope != null) {
+      throw new Error(
+        "Nested atomic() is not supported. The outer scope must resolve " +
+          "before opening another.",
+      );
+    }
+    const scope = new Set<BaseModel>();
+    this.activeAtomicScope = scope;
+
+    const finalize = (didThrow: boolean): void => {
+      try {
+        if (didThrow) {
+          for (const m of scope) {
+            m.discardUnsavedChanges();
+          }
+        } else {
+          this.batch(() => {
+            for (const m of scope) {
+              if (m.hasUnsavedChanges) {
+                m.save();
+              }
+            }
+          });
+        }
+      } finally {
+        this.activeAtomicScope = null;
+      }
+    };
+
+    let result: T | Promise<T>;
+    try {
+      result = fn();
+    } catch (err) {
+      finalize(true);
+      throw err;
+    }
+
+    if (result instanceof Promise) {
+      return result.then(
+        (v) => {
+          finalize(false);
+          return v;
+        },
+        (err) => {
+          finalize(true);
+          throw err;
+        },
+      );
+    }
+    finalize(false);
+    return result;
+  }
+
+  /** @internal */
+  registerAtomicTouch(model: BaseModel): void {
+    this.activeAtomicScope?.add(model);
   }
 
   // ── Undo / Redo ───────────────────────────────────────────────────────────

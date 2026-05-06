@@ -196,6 +196,32 @@ get identifier() {
 
 Wraps the getter in MobX `computed()`. The value is memoized and only re-evaluated when its tracked dependencies (`teamId`, `sortOrder`) change. Components that read `issue.identifier` only re-render when those fields change — not on every unrelated property change.
 
+## Editing models: `update`, `optimisticUpdate`, `assign`
+
+Three flavors of bulk edit on `BaseModel`, differing in when the change is committed:
+
+- **`model.update(data)`** — `assign(data)` then `save()`. Each call enqueues its own transaction immediately. Use when you have a single, self-contained edit.
+
+- **`model.optimisticUpdate(data)`** — alias of `assign(data)`. Stages field changes on the in-memory instance and tracks them in `pendingChanges`. **Does not enqueue a transaction.** Pair with `StoreManager.atomic()` (see [03-storemanager-and-batching.md](#) below) or call `save()` manually.
+
+- **`model.assign(data)`** — same as `optimisticUpdate`. Lower-level name kept for backwards compat.
+
+The optimistic flow lets you stage a multi-step user action and commit-or-discard at the boundary:
+
+```typescript
+storeManager.atomic(async () => {
+  book.optimisticUpdate({ title: "X" });
+  issue.optimisticUpdate({ status: "done" });
+  await api.someServerCall();
+  // resolve → save() runs on every touched model, in one batch
+});
+// throw inside the callback → discardUnsavedChanges() runs on every touched model
+```
+
+If a delta packet arrives during the `await` for a field you've optimistically edited, `pendingChanges` rebases its baseline to the server value while keeping your optimistic value visible — so a later discard lands on server truth, not the stale pre-edit value. Echoes of your own change are no-ops.
+
+`runUndoable` side effects pass through `atomic` unchanged: their server mutation is **not** rolled back when the block throws — you must compensate manually if needed.
+
 ## How Hydration Works
 
 When the engine loads a raw record from IndexedDB or a server response, it calls `model.hydrate(data)` on a new or existing instance. Hydration runs the deserializers, sets property values, and resolves references via the pool.

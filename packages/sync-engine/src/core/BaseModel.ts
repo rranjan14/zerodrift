@@ -96,6 +96,7 @@ export class BaseModel {
     if (oldValue === newValue) {
       return;
     }
+    BaseModel.storeManager?.registerAtomicTouch(this);
     if (!this.pendingChanges.has(propName)) {
       const meta = ModelRegistry.getMetaForInstance(this);
       const propMeta = meta?.properties.get(propName);
@@ -483,6 +484,16 @@ export class BaseModel {
     this.save();
   }
 
+  /**
+   * Stage field updates without enqueueing a transaction. Identical to
+   * `assign()` — exposes the staging-only flow under a name that pairs
+   * with `StoreManager.atomic()`. Call `save()` (or wrap the edit in
+   * `atomic()`) to commit; `discardUnsavedChanges()` to roll back.
+   */
+  optimisticUpdate(data: Record<string, unknown>) {
+    this.assign(data);
+  }
+
   // ---------------------------------------------------------------------------
   // Hydration — flat values + recursive for embedded objects
   // ---------------------------------------------------------------------------
@@ -512,12 +523,41 @@ export class BaseModel {
           const nested = value as Record<string, unknown>;
           this.hydrateNestedModel(propMeta.referenceTo!, nested);
           const idKey = propMeta.idField ?? key + "Id";
-          (this as Record<string, unknown>)[`__raw_${idKey}`] = nested.id;
+          // Rebase: if the FK is being optimistically edited, keep the
+          // optimistic value visible but update its stored baseline to the
+          // server's value, so a later `discardUnsavedChanges()` lands on
+          // the rebased server truth rather than the stale pre-edit value.
+          if (this.pendingChanges.has(idKey)) {
+            this.pendingChanges.set(idKey, nested.id);
+          } else {
+            (this as Record<string, unknown>)[`__raw_${idKey}`] = nested.id;
+          }
           continue;
         }
 
         const deserialized =
           propMeta?.deserializer != null ? propMeta.deserializer(value) : value;
+
+        // Rebase path mirrors UpdateTransaction.rebase: pendingChanges holds
+        // the serialized baseline; an incoming server value that differs
+        // from our optimistic newValue overwrites it. Echo of our own change
+        // (server === optimistic) is a no-op.
+        if (this.pendingChanges.has(key)) {
+          const currentValue = (this as Record<string, unknown>)[key];
+          const optimisticSerialized =
+            propMeta?.serializer != null
+              ? propMeta.serializer(currentValue)
+              : currentValue;
+          const serverSerialized =
+            propMeta?.serializer != null
+              ? propMeta.serializer(deserialized)
+              : value;
+          if (serverSerialized !== optimisticSerialized) {
+            this.pendingChanges.set(key, serverSerialized);
+          }
+          continue;
+        }
+
         const oldRawValue = (this as Record<string, unknown>)[`__raw_${key}`];
         (this as Record<string, unknown>)[`__raw_${key}`] = deserialized;
         const box = this.__mobx[key];

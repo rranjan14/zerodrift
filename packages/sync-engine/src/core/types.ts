@@ -233,6 +233,12 @@ export interface IStoreManager {
     propName: string,
     value: unknown,
   ): unknown;
+  /** @internal Notify the StoreManager that `model` was mutated. Inside
+   * an open `atomic()` scope this records the model so the scope can
+   * call `save()` on commit or `discardUnsavedChanges()` on rollback.
+   * No-op when no atomic scope is active. Called from
+   * `BaseModel.propertyChanged`; not part of the public adopter surface. */
+  registerAtomicTouch(model: BaseModel): void;
 }
 
 /**

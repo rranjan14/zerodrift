@@ -119,6 +119,7 @@ export function makeFakeStoreManager(
     mintId: overrides.mintId ?? (() => crypto.randomUUID()),
     hasFieldTransforms: false,
     applyTransform: (_instance, _propName, value) => value,
+    registerAtomicTouch: () => {},
   } as unknown as StoreManager;
 }
 

@@ -342,6 +342,16 @@ batch(() => {
   issue.priority = 1; issue.save();
 });
 
+// Atomic — stage edits across multiple models and an async call,
+// commit on success, discard on throw. SSE deltas during the await
+// rebase each touched field's discard baseline so a rollback lands
+// on server truth, not the stale pre-edit value.
+await sm.atomic(async () => {
+  book.optimisticUpdate({ title: "X" });
+  issue.optimisticUpdate({ status: "done" });
+  await api.someServerCall();
+});
+
 const { undo, redo, canUndo, canRedo } = useUndoRedo();
 
 // Non-model server calls — wrap to put on the undo stack alongside model edits.
