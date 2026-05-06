@@ -88,9 +88,20 @@ export function fromZod<Z extends z.ZodType>(
  * (modifies the auto-derived `FieldBuilder`) or a full `FieldBuilder`
  * (replaces it — useful for FKs and other shapes Zod can't model).
  */
-export type EntityFromZodFieldOverride =
+export type EntityFromZodFieldOverride<AutoT = unknown> =
   | AnyFieldBuilder
-  | ((auto: AnyFieldBuilder) => AnyFieldBuilder);
+  | ((auto: FieldBuilder<AutoT>) => AnyFieldBuilder);
+
+type EntityFromZodFieldOverrides<Z extends z.ZodObject> = {
+  [K in keyof z.infer<Z> & string]?:
+    | AnyFieldBuilder
+    | ((auto: FieldBuilder<z.infer<Z>[K]>) => unknown);
+};
+
+type NoExtraZodFieldKeys<Z extends z.ZodObject, F> = Record<
+  Exclude<keyof F, keyof z.infer<Z> & string>,
+  never
+>;
 
 /**
  * Resolve the field type contributed by an override entry. Functions are
@@ -99,11 +110,11 @@ export type EntityFromZodFieldOverride =
  * direct `FieldBuilder` overrides are used as-is. When no override is
  * provided the auto-derived `FieldBuilder<AutoT>` from Zod stands.
  */
-type FieldFromOverride<O, AutoT> = O extends (
-  auto: AnyFieldBuilder,
-) => infer R
-  ? R extends AnyFieldBuilder
-    ? R
+type FieldFromOverride<O, AutoT> = O extends (...args: never[]) => infer R
+  ? R extends FieldBuilder<infer RT, infer RM>
+    ? [unknown] extends [RT]
+      ? FieldBuilder<AutoT, RM>
+      : R
     : FieldBuilder<AutoT>
   : O extends AnyFieldBuilder
     ? O
@@ -144,9 +155,11 @@ export interface EntityFromZodOpts<Z extends z.ZodObject = z.ZodObject>
    *       },
    *     });
    */
-  fields?: Partial<
-    Record<keyof z.infer<Z> & string, EntityFromZodFieldOverride>
-  >;
+  fields?: {
+    [K in keyof z.infer<Z> & string]?: EntityFromZodFieldOverride<
+      z.infer<Z>[K]
+    >;
+  };
 }
 
 /**
@@ -161,11 +174,11 @@ export interface EntityFromZodOpts<Z extends z.ZodObject = z.ZodObject>
  * typed React hooks all see Zod-built entities the same way they see
  * hand-written ones.
  *
- * The function-arm of F's constraint uses `(auto) => unknown` and F has
- * no default — both are needed for `const F` to capture chained-method
- * returns like `(b) => b.indexed()`. A strict `=> AnyFieldBuilder` return
- * or a `= Record<never, never>` default suppresses contextual typing of
- * the function literal and erases the narrowed metadata.
+ * `F` is inferred from the provided `fields` map while an intersected
+ * override-map type supplies allowed keys and key-specific contextual typing
+ * for the `(auto) => ...` parameter. When no `fields` map is provided, `F`
+ * defaults to an empty record so untouched Zod fields stay on the auto-derived
+ * `FieldBuilder<z.infer<...>>` path.
  * `EntityFromZodOpts<Z>` keeps the strict union for users who pre-type
  * their opts variables.
  *
@@ -176,15 +189,12 @@ export interface EntityFromZodOpts<Z extends z.ZodObject = z.ZodObject>
  */
 export function entityFromZod<
   Z extends z.ZodObject,
-  const F extends Partial<
-    Record<
-      keyof z.infer<Z> & string,
-      AnyFieldBuilder | ((auto: AnyFieldBuilder) => unknown)
-    >
-  >,
+  const F = Record<never, never>,
 >(
   zSchema: Z,
-  opts: EntityFromZodOptsBase & { fields?: F },
+  opts: EntityFromZodOptsBase & {
+    fields?: F & EntityFromZodFieldOverrides<Z> & NoExtraZodFieldKeys<Z, F>;
+  },
 ): EntityDef<MergedFieldsFromZodObject<Z, F>> {
   const overrides = (opts.fields ?? {}) as Record<
     string,

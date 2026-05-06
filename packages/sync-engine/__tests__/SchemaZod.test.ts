@@ -12,6 +12,7 @@ import {
   type EntityFromZodOpts,
   type FieldBuilder,
   type IndexedFieldKeys,
+  type InferEntity,
 } from "@sync-engine/schema";
 import { ModelRegistry } from "@sync-engine/ModelRegistry";
 import { PropertyType } from "@sync-engine/types";
@@ -109,6 +110,66 @@ describe("entityFromZod — runtime shape", () => {
     expect(issue.name).toBe("ZodIssue");
     expect(issue.fields.title.meta.default).toBe("");
     expect(issue.fields.priority.meta.default).toBe(0);
+  });
+});
+
+describe("entityFromZod — TS field inference", () => {
+  it("keeps Zod field types when opts.fields is omitted", () => {
+    const schema = defineSchema({
+      entities: {
+        layer: entityFromZod(
+          z.object({
+            id: z.string(),
+            name: z.string(),
+            opacity: z.number(),
+          }),
+          { loadStrategy: LoadStrategy.Instant, name: "TypedZodLayer" },
+        ),
+      },
+      links: {},
+    });
+
+    expect(schema.entities.layer.fields.name.meta.kind).toBe("string");
+    expect(schema.entities.layer.fields.opacity.meta.kind).toBe("number");
+
+    type Layer = InferEntity<typeof schema, "layer">;
+    expectTypeOf<Layer["id"]>().toEqualTypeOf<string>();
+    expectTypeOf<Layer["name"]>().toEqualTypeOf<string>();
+    expectTypeOf<Layer["opacity"]>().toEqualTypeOf<number>();
+  });
+
+  it("recovers the Zod field type from chained function overrides", () => {
+    const schema = defineSchema({
+      entities: {
+        layer: entityFromZod(
+          z.object({
+            id: z.string(),
+            layerId: z.string(),
+            parentId: z.string(),
+            opacity: z.number(),
+          }),
+          {
+            loadStrategy: LoadStrategy.Instant,
+            name: "TypedZodLayerWithOverride",
+            fields: {
+              layerId: (b) => b.indexed(),
+              parentId: (b) => b.nullable(),
+            },
+          },
+        ),
+      },
+      links: {},
+    });
+
+    expect(schema.entities.layer.fields.layerId.meta.indexed).toBe(true);
+    expect(schema.entities.layer.fields.parentId.meta.nullable).toBe(true);
+
+    type Layer = InferEntity<typeof schema, "layer">;
+    type LayerIndexedKeys = IndexedFieldKeys<typeof schema, "layer">;
+    expectTypeOf<Layer["layerId"]>().toEqualTypeOf<string>();
+    expectTypeOf<Layer["parentId"]>().toEqualTypeOf<string | null>();
+    expectTypeOf<Layer["opacity"]>().toEqualTypeOf<number>();
+    expectTypeOf<LayerIndexedKeys>().toEqualTypeOf<"layerId">();
   });
 });
 
@@ -307,9 +368,9 @@ describe("entityFromZod — per-field overrides", () => {
     expect(email.indexed).toBe(true);
   });
 
-  // Type-level: typos in the `fields` override map fail to compile. The check
-  // happens at the call site through F's constraint — `EntityFromZodOpts<Z>`
-  // is the explicit single-generic form for users who pre-type their opts.
+  // Type-level: typos in the `fields` override map fail to compile. The
+  // exported `EntityFromZodOpts<Z>` form and the call-site inference path
+  // both constrain overrides to Zod object keys.
   it("constrains override keys to fields actually declared on the Zod object", () => {
     type FieldsArg = NonNullable<
       EntityFromZodOpts<typeof ZodOverridable>["fields"]
@@ -317,6 +378,14 @@ describe("entityFromZod — per-field overrides", () => {
     expectTypeOf<keyof FieldsArg>().toEqualTypeOf<
       "id" | "title" | "email" | "teamId" | "draftNote"
     >();
+
+    entityFromZod(ZodOverridable, {
+      loadStrategy: LoadStrategy.Instant,
+      fields: {
+        // @ts-expect-error override keys must exist on the Zod object
+        typo: (b) => b.indexed(),
+      },
+    });
   });
 
   // Type-level: override metadata (.indexed(), refId target, etc.) propagates
