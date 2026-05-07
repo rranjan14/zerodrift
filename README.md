@@ -1,30 +1,45 @@
 # sync-engine
 
-A TypeScript local-first sync engine. Reads are synchronous from an in-memory pool, writes are optimistic, state stays current across tabs and clients via SSE, and everything persists locally so the app survives reload and works offline. The same engine runs in Node so agents and background workers can hold a live model just like a browser tab.
+A TypeScript local-first sync engine. Reads are synchronous from an in-memory pool, writes are optimistic, state stays current across tabs and clients via SSE, and everything persists locally so the app survives reloads and works offline. The same engine runs in Node so agents and background workers can hold a live model just like a browser tab.
 
-You bring the backend. The client speaks a small three-endpoint protocol — implement it in any language. A reference Go backend is included in this repo so you can see a working end-to-end system, but it isn't the product.
+You bring the backend. The client speaks a small three-endpoint protocol that can be implemented in any language. A reference Go backend and Next.js demo live in this repo so you can run the whole loop locally.
 
 ## What you get
 
-- **Local-first** — every read is sync against an in-memory `ObjectPool`; writes apply optimistically and reconcile with server deltas.
-- **Realtime** — multi-tab and multi-client sync via SSE. Other clients' edits show up without polling.
-- **Offline** — IndexedDB-backed; transactions queue while disconnected and replay on reconnect.
-- **Two authoring paths** — decorator classes for hand-written models, or `defineSchema(...)` for schema-as-data with a fully-typed `store.<entity>.*` API. Both compile to the same registry shape and coexist in one app.
-- **Batched undo/redo** — group writes into a single undoable action; `runUndoable(fn)` puts non-model server calls on the same stack.
-- **Headless** — no React or DOM dependency in the core. Run it in Node for agents, CLIs, or service-side workers.
-- **Bring your own backend** — three endpoints, no specific language or storage required.
+- **Local-first reads**: every read hits an in-memory `ObjectPool` first.
+- **Optimistic writes**: model changes update the UI immediately, then reconcile with server deltas.
+- **Realtime sync**: tabs and clients stay current over SSE, without polling.
+- **Offline persistence**: IndexedDB stores models and queued transactions in the browser.
+- **Two authoring paths**: decorator classes or schema-as-data via `defineSchema(...)`.
+- **React and headless runtimes**: use hooks in React, or run `StoreManager` directly in Node, CLIs, and agents.
+- **Bring your own backend**: implement bootstrap, transaction, and SSE endpoints in the stack you already use.
 
-## Three subpaths
+## Install
 
-| Import | What's in it |
+```bash
+npm install sync-engine
+```
+
+Optional packages depend on the surface you use:
+
+```bash
+npm install zod         # for entityFromZod(...) schema authoring
+npm install eventsource # for Node/headless SSE clients
+```
+
+If you use decorators, import `reflect-metadata` once before model classes are loaded.
+
+## Import paths
+
+| Import | Use it for |
 |---|---|
-| `sync-engine` | `StoreManager`, `BaseModel`, decorators, `ObjectPool`, types. Vanilla TS — no React, no DOM. |
-| `sync-engine/schema` | `defineSchema`, `entity`, `link`, `s` (field builders), `extend`, `createStore`, Zod adapter (`fromZod` / `entityFromZod`). Schema-as-data authoring; produces a typed `store.<entity>.*` API. |
-| `sync-engine/react` | `<SyncProvider>` and hooks: `useModel`, `useModels`, `useIndexedCollection`, `useIndexedCollections`, `useCollection`, `useBackRef`, `useUndoRedo`, `useBatch`, `useBootstrapStatus`. Schema-typed siblings: `useEntity`, `useEntities`, `useEntitiesByIndex`, `useEntitiesByIndexValues`. |
+| `sync-engine` | `StoreManager`, `BaseModel`, decorators, `ObjectPool`, storage adapters, and core types. |
+| `sync-engine/schema` | `defineSchema`, `entityFromZod`, field builders, links, extensions, and typed `store.<entity>.*` APIs. |
+| `sync-engine/react` | `<SyncProvider>` and React hooks such as `useModel`, `useModels`, `useCollection`, `useUndoRedo`, and schema-typed hook variants. |
 
 ## Define your models
 
-Models extend `BaseModel` and use decorators to declare fields and relationships.
+Decorator models extend `BaseModel` and use decorators to declare fields and relationships.
 
 ```ts
 import {
@@ -58,45 +73,55 @@ export class Issue extends BaseModel {
 }
 ```
 
-- `@Property` — persisted, observable field. `indexed: true` builds a secondary IndexedDB index on it.
-- `@Reference` / `@LazyReference` — foreign-key to another model. `issue.team` resolves the Team from the pool. `@Reference` eagerly pulls the target into the pool during hydration; `@LazyReference` is a sync getter that returns whatever is in the pool right now.
-- `@ReferenceCollection` / `@LazyReferenceCollection` — one-to-many where the foreign key lives on the child. Eager variant loads alongside the parent (recursively for nested eager collections); lazy variant stays Idle until `.load()` or `useCollection` subscribes.
-- `@OwnedCollection` / `@LazyOwnedCollection` — one-to-many where the parent stores the child IDs as an array. Same eager/lazy split.
-- `@BackReference` — single inverse relationship; deleting the owner cascades.
-- `loadStrategy` — `Instant` loads at bootstrap; `Lazy` / `Partial` / `ExplicitlyRequested` load on demand; `Ephemeral` stays in the pool only (never persisted).
+`@Property` fields are persisted and observable. `@Reference`, `@ReferenceCollection`, `@OwnedCollection`, and `@BackReference` describe relationships; `Lazy*` variants load on demand. `loadStrategy` controls whether a model loads during bootstrap or only when requested.
 
-See [`agent-docs/01-models-and-decorators.md`](agent-docs/01-models-and-decorators.md) for the full decorator reference.
+See [agent-docs/01-models-and-decorators.md](agent-docs/01-models-and-decorators.md) for the full decorator reference.
 
-## Schema-first authoring (alternative)
+## Schema-first with Zod
 
-The same models authored as plain data, with a typed `store.<entity>.*` API falling out of the schema:
+If your record shapes already live in Zod, use `entityFromZod(...)` as the schema authoring path. Zod owns the field types; `fields` overrides add sync-engine metadata such as foreign keys and indexes.
 
 ```ts
+import { z } from "zod";
 import {
-  defineSchema, entity, link, fields as s, LoadStrategy,
-  createStore, extend,
+  createStore,
+  defineSchema,
+  entityFromZod,
+  fields as s,
+  link,
+  LoadStrategy,
 } from "sync-engine/schema";
+
+const TeamRecord = z.object({
+  id: z.string(),
+  name: z.string(),
+});
+
+const IssueRecord = z.object({
+  id: z.string(),
+  title: z.string().default(""),
+  priority: z.number().default(0),
+  teamId: z.string().nullable(),
+});
 
 export const schema = defineSchema({
   entities: {
-    team: entity({
+    team: entityFromZod(TeamRecord, {
+      name: "Team",
       loadStrategy: LoadStrategy.Instant,
-      fields: { id: s.id(), name: s.string() },
     }),
-    issue: entity({
+    issue: entityFromZod(IssueRecord, {
+      name: "Issue",
       loadStrategy: LoadStrategy.Instant,
       fields: {
-        id:       s.id(),
-        title:    s.string().default(""),
-        priority: s.number().default(0),
-        teamId:   s.refId("team").nullable().indexed(),
+        teamId: s.refId("team").nullable().indexed(),
       },
     }),
   },
   links: {
     issueTeam: link({
       from: { entity: "issue", field: "teamId", as: "team" },
-      to:   { entity: "team",  many: "issues", lazy: true },
+      to: { entity: "team", many: "issues", lazy: true },
       onDelete: "cascade",
     }),
   },
@@ -104,97 +129,22 @@ export const schema = defineSchema({
 
 const store = createStore({ schema, storeManager: sm });
 
-// Reads — sync (peek) vs async (get) vs force-network (refresh):
-const team = store.team.peek(teamId);                              // pool snapshot, sync
-const issue = await store.issue.get(issueId);                      // pool-first, falls back to IDB / fetcher
-const allTeams = await store.team.getAll();
-const teamIssues = await store.issue.getByIndex("teamId", teamId); // key constrained to .indexed() fields
-
-// Writes — typed records with create/update/delete + per-record save:
-const issueA = store.issue.create({ title: "Fix bug", teamId: team!.id });
-store.issue.update(issueA.id, { priority: 1 });
-issueA.title = "Fix hydration bug"; issueA.save();
-
-// Subscriptions — payload-less, re-read inside the handler:
-store.issue.watchByIndex("teamId", teamId, () => {
-  const items = store.issue.peekByIndex("teamId", teamId);
-});
+const issue = await store.issue.get(issueId);
+const teamIssues = await store.issue.getByIndex("teamId", teamId);
+const newIssue = store.issue.create({ title: "Fix hydration", teamId });
+newIssue.save();
 ```
 
-Behavior (computed + actions) lives outside the schema via `extend(...)` so the schema descriptor stays serializable:
-
-```ts
-const issueBehavior = extend(schema, "issue", {
-  computed: { identifier: (i) => `${i.priority}-${i.title.slice(0, 8)}` },
-  actions:  { moveToTeam(i, teamId: string) { i.teamId = teamId; } },
-});
-const store = createStore({ schema, storeManager: sm, extensions: [issueBehavior] });
-```
-
-Both authoring paths compile to the same `ModelRegistry`, so a schema entity can reference a decorator class via `entity({ external: true, name: "User" })` (and vice versa).
-
-### Drive entities from a Zod schema
-
-If your record shapes already live as Zod schemas (for example, schemas you also validate server responses with elsewhere), `entityFromZod(...)` reuses them as the field source. Zod doesn't carry FK or index metadata — layer those on per-field via `opts.fields`:
-
-```ts
-import { z } from "zod";
-import {
-  defineSchema, entityFromZod, link, fields as s, LoadStrategy,
-} from "sync-engine/schema";
-
-const ZodTeam = z.object({
-  id:   z.string(),
-  name: z.string(),
-});
-
-const ZodIssue = z.object({
-  id:       z.string(),
-  title:    z.string().default(""),
-  priority: z.number().default(0),
-  teamId:   z.string().nullable(), // Zod owns nullability; override adds FK metadata
-  email:    z.string().nullable(),
-});
-
-const schema = defineSchema({
-  entities: {
-    team:  entityFromZod(ZodTeam, {
-      loadStrategy: LoadStrategy.Instant,
-      name: "Team",
-    }),
-    issue: entityFromZod(ZodIssue, {
-      loadStrategy: LoadStrategy.Instant,
-      name: "Issue",
-      fields: {
-        // Replacement form — substitute the Zod-derived FieldBuilder entirely.
-        teamId: s.refId("team").nullable().indexed(),
-        // Chain form — modify the auto-derived builder.
-        email:  (b) => b.indexed(),
-      },
-    }),
-  },
-  links: {
-    issueTeam: link({
-      from: { entity: "issue", field: "teamId", as: "team" },
-      to:   { entity: "team",  many: "issues", lazy: true },
-      onDelete: "cascade",
-    }),
-  },
-});
-```
-
-Override keys are constrained to `keyof z.infer<Z>` so typos fail to compile. Zod stays the source of field shape and TypeScript types here; `link(...)` stays the source of truth for the relationship graph, and you can still reuse the same Zod schemas for validation at your API boundaries.
-
-See [`agent-docs/11-schema-first-authoring.md`](agent-docs/11-schema-first-authoring.md) for the full reference.
+Both authoring paths compile to the same registry, so schema entities and decorator classes can coexist. See [agent-docs/11-schema-first-authoring.md](agent-docs/11-schema-first-authoring.md) for extensions, typed subscriptions, Zod override forms, and coexistence details.
 
 ## React quick start
 
-Wrap your app in `<SyncProvider>` once. Import your model file as a side-effect so the decorators run before bootstrap.
+Wrap your app in `<SyncProvider>` once. Import your model file as a side effect so decorators run before bootstrap.
 
 ```tsx
 import "reflect-metadata";
 import { SyncProvider } from "sync-engine/react";
-import "./models"; // side-effect import — registers model classes
+import "./models";
 
 export default function Providers({ children }) {
   return (
@@ -208,13 +158,14 @@ export default function Providers({ children }) {
         transactionSender: async (batch) => {
           const res = await fetch("/api/transactions", {
             method: "POST",
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify(batch),
           });
           return res.json();
         },
         syncUrl: "/api/events",
       }}
-      fallback={<div>Loading…</div>}
+      fallback={<div>Loading...</div>}
     >
       {children}
     </SyncProvider>
@@ -222,184 +173,50 @@ export default function Providers({ children }) {
 }
 ```
 
-### Custom id generation with context
-
-By default new client-side models get `crypto.randomUUID()`. Override with `identifierFn` to mint ids that depend on runtime state (current user, tenant, etc.) — the live state is forwarded via the `context` prop:
+Common reads and writes:
 
 ```tsx
-type AppContext = { userId: string; tenantId: string };
+const { items: issues } = useModels<Issue>("Issue");
+const { item: issue } = useModel<Issue>("Issue", issueId);
+const { items: teamIssues } = useCollection(team?.issues);
+const { phase } = useBootstrapStatus();
 
-<SyncProvider<AppContext>
-  config={{
-    workspaceId: "ws-1",
-    bootstrapFetcher,
-    identifierFn: (meta, ctx) =>
-      ctx == null
-        ? crypto.randomUUID()
-        : `${ctx.tenantId}:${meta.name}:${crypto.randomUUID()}`,
-  }}
-  context={{ userId, tenantId }}
->
-  {children}
-</SyncProvider>
-```
-
-`identifierFn` only fires for client-side `new Model()` construction — records hydrated from the server or IndexedDB carry their own ids. Context is sampled at mint time, so handlers fired in the same commit as a context change see the fresh value.
-
-### Field transforms — canonicalize values on assign
-
-`applyFieldTransforms` walks every registered model once at engine init and stamps a transform onto matching properties. The transform fires inside the property setter (`issue.teamId = x`), so consumers can rewrite cross-cutting input formats without per-field decorators on every model.
-
-Use case: a multi-layer app where ids are namespaced as `<layerId>/<id>` and you want bare `"team-42"` assignments to auto-prefix with the issue's own layer:
-
-```ts
-import { PropertyType, StoreManager } from "sync-engine";
-
-type LayerContext = { layerId: string };
-
-const sm = new StoreManager<LayerContext>({
-  workspaceId,
-  bootstrapFetcher,
-  applyFieldTransforms: (_meta, prop) => {
-    if (prop.type !== PropertyType.Reference) return undefined;
-    return (value, instance, ctx) => {
-      if (typeof value !== "string" || value === "" || value.includes("/")) {
-        return value;
-      }
-      // Prefer the instance's own layerId; fall back to live context for
-      // freshly-constructed models that haven't been assigned one yet.
-      const layerId = (instance as { layerId?: string }).layerId ?? ctx?.layerId;
-      return layerId != null ? `${layerId}/${value}` : value;
-    };
-  },
-});
-sm.setContext({ layerId: "layer-prod" });
-
-issue.teamId = "team-42";          // → "layer-prod/team-42"
-issue.teamId = "layer-prod/team-42"; // already prefixed; left alone
-```
-
-The rule is consulted once per `(model, property)` pair at construction. The setter hot path skips the lookup entirely when no rule was configured. The transform receives `(value, instance, context)` — read sibling fields off the instance first, fall back to `context` for cases where the instance hasn't been hydrated yet.
-
-### Reading data
-
-```tsx
-const { items: issues } = useModels<Issue>("Issue");        // all instances; re-renders on add/remove
-const { item: issue } = useModel<Issue>("Issue", issueId);  // single by ID; auto-loads on pool miss
-const { phase } = useBootstrapStatus();                      // engine lifecycle state
-```
-
-Pool-keyed hooks (`useModel`, `useModels`, `useIndexedCollection`) return `{ item | items, isLoading, error, reload }`. The collection-wrapper hooks (`useCollection`, `useBackRef`) wrap a runtime collection you already hold and additionally expose `isLoaded` (and return `value` for `useBackRef`).
-
-If you author models via `defineSchema(...)`, prefer the typed siblings — they take the `store.<entity>` namespace directly and infer the record type from the schema:
-
-```tsx
-import {
-  useEntity,
-  useEntities,
-  useEntitiesByIndex,
-  useEntitiesByIndexValues,
-} from "sync-engine/react";
-
-const { item: issue } = useEntity(store.issue, issueId);
-const { items: teams } = useEntities(store.team);
-const { items: teamIssues } = useEntitiesByIndex(store.issue, "teamId", teamId);
-//                                                            ^^^^^^^^ autocompletes to indexed fields only
-
-// Multi-value form — issues for any of these teams.
-const { items: myIssues } = useEntitiesByIndexValues(store.issue, "teamId", myTeamIds);
-```
-
-Same return shape, same reactivity contract — the typed hooks are thin wrappers that resolve the registry name from the namespace and delegate to the string-keyed primitives.
-
-### Writing data
-
-```tsx
-// Optimistic update — the UI updates immediately; the engine sends to the server in the background.
 issue.title = "New title";
 issue.save();
 
-// Bulk-assign + send. Works for both new and existing models.
-const issue = new Issue();
-issue.update({ title: "Hello", priority: 1, teamId: "abc" });
-
-// Pass IDs for related models, not the object itself.
-const team = new Team();
-team.update({ name: "Engineering" });
-const issue2 = new Issue();
-issue2.update({ title: "Hello", teamId: team.id });
-
-// Preview / discard — edit locally without committing.
-issue.assign({ title: "Draft", priority: 3 });
-issue.hasUnsavedChanges;       // true
-issue.discardUnsavedChanges(); // reverts to last-saved values
-// or: issue.save() to commit
-
-// Batched, single-undo writes.
 const batch = useBatch();
 batch(() => {
-  issue.title = "x"; issue.save();
-  issue.priority = 1; issue.save();
-});
-
-// Atomic — stage edits across multiple models and an async call,
-// commit on success, discard on throw. SSE deltas during the await
-// rebase each touched field's discard baseline so a rollback lands
-// on server truth, not the stale pre-edit value.
-await sm.atomic(async () => {
-  book.optimisticUpdate({ title: "X" });
-  issue.optimisticUpdate({ status: "done" });
-  await api.someServerCall();
+  issue.priority = 1;
+  issue.save();
 });
 
 const { undo, redo, canUndo, canRedo } = useUndoRedo();
-
-// Non-model server calls — wrap to put on the undo stack alongside model edits.
-const { archivedCount } = await sm.runUndoable(
-  () => api.bulkArchive({ teamId }),    // returns { changeLogId, ... }
-  { actionType: "bulkArchive" },
-);
 ```
 
-### Lazy collections
+Schema-authored stores also have typed hook variants:
 
 ```tsx
-const { items: issues, isLoading } = useCollection(team?.issues);    // @ReferenceCollection
-const { items: members } = useCollection(team?.members);              // @OwnedCollection
-const { value: favorite } = useBackRef(issue?.favorite);              // @BackReference
-
-// When you have a model name + index key + value but not the parent instance:
-const { items: activities } = useIndexedCollection<Activity>("Activity", "taskId", taskId);
+const { item: issue } = useEntity(store.issue, issueId);
+const { items: teams } = useEntities(store.team);
+const { items: teamIssues } = useEntitiesByIndex(store.issue, "teamId", teamId);
 ```
 
-`team.issues.items` stays in sync with the pool automatically — when a delta inserts a new Issue with `teamId === team.id`, the engine attaches it to the parent's collection inline, so observers re-render without a re-fetch. See [`agent-docs/10-inverse-links-and-reactivity.md`](agent-docs/10-inverse-links-and-reactivity.md).
+See [agent-docs/08-react-integration.md](agent-docs/08-react-integration.md) for hook return shapes, context-driven id generation, Storybook seeding, and testing patterns.
 
-Decorator names match Linear's convention: `@Reference` / `@ReferenceCollection` / `@OwnedCollection` are eager (loaded alongside the parent, recursively for nested eager collections), and the `@Lazy*` prefixed variants are loaded on demand. See [`agent-docs/04-lazy-loading.md`](agent-docs/04-lazy-loading.md).
+## Headless usage
 
-## Headless quick start (Node, agents, workers)
-
-The same `StoreManager` runs without React or a browser. Useful for agents that need a live model rather than a snapshot.
+The same `StoreManager` runs without React or a browser. Use `MemoryAdapter` for in-process agents and tests, or implement `StorageAdapter` for durable storage.
 
 ```ts
 import "reflect-metadata";
-import { StoreManager, MemoryAdapter } from "sync-engine";
 import EventSource from "eventsource";
+import { MemoryAdapter, StoreManager } from "sync-engine";
 import "./models";
 
 const sm = new StoreManager({
   workspaceId: "agent-1",
-  bootstrapFetcher: async (type, since) => {
-    const res = await fetch(`http://localhost:8080/api/bootstrap?type=${type}&since=${since ?? 0}`);
-    return res.json();
-  },
-  transactionSender: async (batch) => {
-    const res = await fetch("http://localhost:8080/api/transactions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(batch),
-    });
-    return res.json();
-  },
+  bootstrapFetcher,
+  transactionSender,
   syncUrl: "http://localhost:8081/api/events",
   sseClientFactory: (url) => new EventSource(url),
   storageAdapter: new MemoryAdapter(),
@@ -408,314 +225,131 @@ const sm = new StoreManager({
 await sm.bootstrap();
 ```
 
-For headless callers using `identifierFn`, push context with `sm.setContext(ctx)` whenever the relevant state (user, tenant, …) changes — id generation reads it on demand, not at config time.
-
-| Environment | `sseClientFactory` | `storageAdapter` |
-|---|---|---|
-| Browser | default (`EventSource`) | default (IndexedDB) |
-| Node.js | `eventsource` package | `MemoryAdapter` or custom |
-| Serverless / edge | fetch-based SSE reader | `MemoryAdapter` |
-
-For durable agents, implement `StorageAdapter` (12 methods) against SQLite, Redis, or any KV store.
-
-### Reactivity outside React
-
-```ts
-// Pool-level: fires when models of a type are added or removed.
-const off = sm.objectPool.subscribe("Issue", () => {
-  const issues = sm.objectPool.getAll("Issue");
-});
-
-// Collection-level: fires when items are attached, detached, replaced, or load() runs.
-team.issues.subscribe(() => { /* team.issues.items is current */ });
-
-// Field-level: fires when a specific field (or derived value) changes.
-issue.watch((m) => m.priority, (next, prev) => { /* ... */ });
-issue.watch((m) => m.status === "done", (isDone) => { /* ... */ });
-```
-
-### Pool-first reads — the get-or-load family
-
-Four symmetric APIs, all generic over `T extends BaseModel`. Each checks the pool first, then IDB, then the configured fetcher:
-
-```ts
-const driver = await sm.getOrLoadById<DriverModel>("DriverModel", id);
-//    ^? DriverModel | null
-
-// Bulk-by-ids — coalesces missing ids into a single onDemandBatchFetcher
-// call (one server request instead of N).
-const drivers = await sm.getOrLoadByIds<DriverModel>("DriverModel", ids);
-//    ^? DriverModel[]
-
-const comments = await sm.getOrLoadCollection<Comment>("Comment", "issueId", issueId);
-//    ^? Comment[]
-
-// Load every instance of a model — Lazy / Partial models trigger a Full
-// bootstrap fetch on first call; coverage is cached so subsequent calls
-// hit the pool directly.
-const allDrivers = await sm.getOrLoadAll<DriverModel>("DriverModel");
-
-// Optional sync-group scoping — fetches only the drivers in those groups.
-const teamADrivers = await sm.getOrLoadAll<DriverModel>("DriverModel", {
-  syncGroups: ["team-A"],
-});
-```
-
-`getOrLoadById` / `getOrLoadByIds` / `getOrLoadCollection` are the pool-first lookup APIs. `getOrLoadAll` completes the set by loading every instance of a model; per-strategy: Instant + Ephemeral return the pool snapshot directly (already fully resident); Lazy / Partial / ExplicitlyRequested fetch from the server; Local reads from IDB. Coverage is tracked under a reserved `"*"` sentinel key in the partial-index store, scoped per `syncGroups` set so different scopes are cached independently.
-
-For Storybook / test fixtures, two pool-only seed helpers (`sm.seed(modelName, records)` / `sm.seedMany({...})`) accept the same shape as `bootstrapFetcher`'s `models` response — see [`agent-docs/08-react-integration.md`](agent-docs/08-react-integration.md#storybook--testing) for the full pattern.
-
-### Refreshing stale data
-
-When a long-lived agent reconnects after a stream gap, three APIs re-fetch from the server while preserving object identity (existing references see updated values, not new objects):
-
-```ts
-await sm.refreshCollection("Activity", "taskId", "t1");
-await sm.refreshModels("Activity", ["a1", "a2"]);
-await sm.refreshAllOfModel("Activity");
-```
-
-### Observability
-
-Wire `onError` once and every async failure the engine catches internally — eager loads, SSE parse errors, transaction send retries, deferred bootstrap fetches, sync-group eviction callback throws — routes through it with a tagged-union context describing the failure site:
-
-```ts
-import { StoreManager, type EngineErrorContext } from "sync-engine";
-
-new StoreManager({
-  // ...
-  onError: (err, ctx: EngineErrorContext) => {
-    Sentry.captureException(err, { tags: { kind: ctx.kind, ...ctx } });
-  },
-});
-```
-
-`ctx.kind` is one of: `eagerReferenceLoad`, `eagerCollectionLoad`, `lazyCollectionLoad`, `lazyOwnedCollectionLoad`, `lazyBackRefLoad`, `deferredBootstrap`, `newModelsBootstrap`, `transactionDiscarded`, `syncGroupFetch`, `ssePacketParse`, `sseConstruction`, `transactionSend`, `onSyncGroupDelete`, `undoableAction`. Each carries fields specific to its site (model name, parent id, raw SSE message, etc.). Without `onError`, internal failures are silently dropped (existing behavior preserved).
-
-Other lifecycle hooks on the same config:
-
-- `onPhaseChange(phase, detail)` — bootstrap state machine (`Idle` → `Fetching` → `Hydrating` → `Ready` | `Error`).
-- `onDeltaPacket(packet)` — fires on every SSE delta after it processes.
-- `onReady()` — fires when bootstrap completes.
-- `undoableActions: { undo, redo? }` — handlers for `runUndoable(fn)` entries on the undo stack. Each receives the recorded `UndoableAction` and returns the compensating action (or void to reuse the original). See [`agent-docs/06-transactions-and-undo.md`](agent-docs/06-transactions-and-undo.md).
-
-### Isolated vs shared agent state
-
-- **Isolated** — each agent has its own `StoreManager`. Convergence happens via SSE. Undo is local; agent writes arrive in the browser as deltas and never touch the browser's undo stack.
-- **Shared** — multiple agents share one `StoreManager` in the same process (web worker, VS Code extension, etc.). No round-trip; all writes hit the same undo stack.
+See [agent-docs/09-headless-and-agents.md](agent-docs/09-headless-and-agents.md) for reactivity outside React, shared vs isolated agent state, refresh APIs, and observability.
 
 ## Backend protocol
 
-The client needs three endpoints. Implement them in any language. The reference Go backend in this repo is one example; replace it with whatever fits your stack.
+The client needs three endpoints:
 
-### `GET /api/bootstrap`
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/bootstrap` | Fetch initial or partial model data. |
+| `POST /api/transactions` | Accept queued client mutations. |
+| `GET /api/events` | Stream delta packets over SSE. |
 
-Query params: `type` (model name), `since` (syncId, optional). Returns all records of that type, or only those updated since `since`.
+Bootstrap returns records grouped by model name:
 
 ```json
 {
   "lastSyncId": 5205,
   "subscribedSyncGroups": ["workspace-abc"],
   "models": {
-    "Issue": [ { "id": "...", "title": "...", "teamId": "..." } ],
-    "Team":  [ { "id": "...", "name": "..." } ]
+    "Issue": [{ "id": "...", "title": "...", "teamId": "..." }],
+    "Team": [{ "id": "...", "name": "..." }]
   },
   "backendDatabaseVersion": 1
 }
 ```
 
-The client calls bootstrap on startup, then subscribes to the SSE stream from `lastSyncId` forward.
-
-### `POST /api/transactions`
+Transactions send inserts, updates, deletes, and archives:
 
 ```json
 {
   "transactions": [
-    { "id": "uuid", "action": "I", "modelName": "Issue", "modelId": "uuid",
-      "data": { "id": "...", "title": "...", "teamId": "..." } },
-    { "id": "uuid", "action": "U", "modelName": "Issue", "modelId": "uuid",
-      "changes": { "title": { "oldValue": "Old", "newValue": "New" } } },
-    { "id": "uuid", "action": "D", "modelName": "Issue", "modelId": "uuid" }
+    {
+      "id": "uuid",
+      "action": "U",
+      "modelName": "Issue",
+      "modelId": "uuid",
+      "changes": {
+        "title": { "oldValue": "Old", "newValue": "New" }
+      }
+    }
   ]
 }
 ```
 
-Actions: `I` (insert), `U` (update), `D` (delete), `A` (archive). Updates include old + new per field so the client can rebase optimistic changes against authoritative deltas.
+The response should include the latest committed sync id:
 
 ```json
 { "success": true, "lastSyncId": 5206 }
 ```
 
-### `GET /api/events` (SSE)
-
-Each message is a delta packet:
+SSE messages are delta packets:
 
 ```json
 {
   "syncActions": [
-    { "id": 5206, "modelName": "Issue", "modelId": "uuid",
-      "action": "U", "data": { "title": "New title", "priority": 1 } }
+    {
+      "id": 5206,
+      "modelName": "Issue",
+      "modelId": "uuid",
+      "action": "U",
+      "data": { "title": "New title", "priority": 1 }
+    }
   ],
   "addedSyncGroups": [],
   "removedSyncGroups": []
 }
 ```
 
-`id` is a monotonic syncId. The client passes `?since=<lastSyncId>` on connect so the server can replay missed events.
+The client reconnects with `?since=<lastSyncId>` so the server can replay missed events. See [agent-docs/07-realtime-sync.md](agent-docs/07-realtime-sync.md) for SSE details and [agent-docs/05-sync-groups.md](agent-docs/05-sync-groups.md) for scoped event delivery.
 
-### Sync groups
+## Run the demo
 
-Sync groups control which clients receive which events. Every write is tagged with one or more group labels; the server only delivers an event to SSE connections subscribed to at least one of the same labels. The labels are arbitrary strings — workspace IDs are typical.
+This repo includes a Go backend (`go/`) and a Next.js demo app (`webapp/`).
 
-The client declares its groups at connect time via the `syncGroups` query param on both `/api/bootstrap` and `/api/events`. If a user is added to a new group mid-session, the server sends a delta with `addedSyncGroups`; the client bootstraps the new data and starts receiving events for it without reconnecting. Wire this up with `syncGroupFetcher`:
-
-```ts
-const sm = new StoreManager({
-  // ...
-  syncGroupFetcher: async (addedGroups) => {
-    const res = await fetch(`/api/bootstrap?syncGroups=${addedGroups.join(",")}`);
-    return res.json();
-  },
-});
-```
-
-If your app has a single fixed scope per session, you can omit it.
-
-If the client knows the user's groups *before* the first bootstrap fetch (e.g. from your auth provider or a separate session API), pass a `bootstrapSyncGroups` hook. The returned set is append-only unioned with `dbMeta.subscribedSyncGroups` and used for every bootstrap-style fetch (Phase 1, deferred Phase 2, newly-added-models follow-up, `getOrLoadAll`), so the server doesn't have to infer scope from auth/session — useful for stateless servers and SSR. Hook failure aborts bootstrap.
-
-```ts
-const sm = new StoreManager({
-  // ...
-  bootstrapSyncGroups: async () => {
-    const { groups } = await fetch("/api/me/groups").then((r) => r.json());
-    return groups; // string[]
-  },
-});
-```
-
-### Compound index-key fetches
-
-Two layers of compound parity, both opt-in:
-
-1. **Client-side auto-derived covering indexes** — `RefCollection`s walk the parent's FK graph (`transientIndexDepth`, default 3) and emit additional partial-index queries when the child denormalizes a parent FK. Adopters need only set `@Property({ indexed: true })` on the denormalized field. No protocol change. See [`agent-docs/04-lazy-loading.md`](agent-docs/04-lazy-loading.md).
-
-2. **Server-side compound queries** — when ≥ `compoundIndexFetchThreshold` (default 5) concurrent `getOrLoadCollection` requests share a parent FK value, the engine collapses them into one dotted-path query (e.g. 50 `Comment[taskId=Tx]` → one `Comment[taskId.projectId=P1]`). The server resolves the dotted path via a JOIN and returns the union; per-waiter filtering narrows each caller's slice. Opt in with `serverSupportsCompoundIndexKeys: true`; backends without JOIN support keep per-parent fan-out.
-
-   **Coverage caching.** After the compound fetch lands, the full response bag is written to IDB and the compound key is recorded in the partial-index store. A future direct `getOrLoadCollection("Comment", "taskId", T_new)` short-circuits when `T_new`'s parent FK matches the recorded compound's value — no redundant network call.
-
-```ts
-new StoreManager({
-  // ...
-  onDemandIndexBatchFetcher: async (queries) => fetch(...).then(r => r.json()),
-  serverSupportsCompoundIndexKeys: true,
-  // compoundIndexFetchThreshold: 5,  // optional, defaults to 5
-});
-```
-
-The server contract: `indexKey` may be a dotted path. Each segment is an FK on the previous model. The engine only currently emits one-hop dotted paths (e.g. `taskId.projectId`); deeper paths are a future revision.
-
-## Documentation
-
-Deeper material lives in [`agent-docs/`](agent-docs/):
-
-- [00 — Architecture overview](agent-docs/00-overview.md)
-- [01 — Models and decorators](agent-docs/01-models-and-decorators.md)
-- [02 — ObjectPool](agent-docs/02-object-pool.md)
-- [03 — IndexedDB and persistence](agent-docs/03-indexeddb-and-persistence.md)
-- [04 — Lazy loading](agent-docs/04-lazy-loading.md)
-- [05 — Sync groups](agent-docs/05-sync-groups.md)
-- [06 — Transactions and undo](agent-docs/06-transactions-and-undo.md)
-- [07 — Realtime sync](agent-docs/07-realtime-sync.md)
-- [08 — React integration](agent-docs/08-react-integration.md)
-- [09 — Headless and agents](agent-docs/09-headless-and-agents.md)
-- [10 — Inverse links and reactivity](agent-docs/10-inverse-links-and-reactivity.md)
-- [11 — Schema-first authoring](agent-docs/11-schema-first-authoring.md)
-
-## Reference backend and demo
-
-This repo includes a Go backend (`go/`) and a Next.js demo app (`webapp/`) so you can run a working end-to-end system locally. Treat it as a reference implementation — your real backend can be anything that speaks the protocol above.
-
-**Prerequisites:** Docker, Go 1.22+, Node 18+, Make.
+Prerequisites: Docker, Go 1.22+, Node 18+, and Make.
 
 ```bash
-make go-tidy        # generate go.sum (once after cloning)
-make start-backend  # Postgres + Go services (API :8080, SSE :8081)
-make install-webapp # install webapp deps (once)
-make run-webapp     # Next.js dev server
+make go-tidy
+make start-backend
+make install-webapp
+make run-webapp
 ```
 
 Open [http://localhost:3000](http://localhost:3000) in two tabs to see sync in action.
 
-```bash
-make ps           # show running containers
-make logs         # tail API + SSE logs
-make stop-backend # stop containers, keep Postgres data
-make clean        # stop containers + wipe Postgres volume
-```
-
-### How the reference backend is wired
-
-One Go binary, two service modes controlled by `SERVICE_MODE`:
-
-- **api** (stateless, `:8080`) — `GET /api/bootstrap` and `POST /api/transactions`. Scales horizontally.
-- **sse** (stateful, `:8081`) — `GET /api/events`. Holds SSE connections and runs a Postgres `LISTEN/NOTIFY` goroutine.
-
-Write flow:
-
-1. Client: `issue.title = "x"; issue.save()`.
-2. `TransactionQueue` batches and POSTs to the API.
-3. Go: `BEGIN` → model write → changelog append → `COMMIT`.
-4. Postgres trigger fires `pg_notify`.
-5. SSE listener queries the row; broadcaster fans out to subscribed clients.
-6. `EventSource` receives the delta; `ObjectPool` updates; React re-renders.
-
-| Endpoint | Service | Purpose |
-|---|---|---|
-| `GET /api/bootstrap` | api | Full or partial bootstrap |
-| `POST /api/transactions` | api | Client mutations |
-| `GET /api/events` | sse | SSE stream |
-| `GET /api/health` | both | Status check |
-| `GET /api/stats` | sse | Connected client count |
-
-### Single-process dev mode
+Useful commands:
 
 ```bash
-cd go
-go mod tidy
-SERVICE_MODE=all DATABASE_URL=postgres://postgres:password@localhost:5432/syncdb?sslmode=disable go run cmd/server/main.go
+make ps
+make logs
+make stop-backend
+make clean
 ```
 
-Set both `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_SSE_URL` to `http://localhost:8080`.
+## Documentation
+
+Deeper material lives in [agent-docs/](agent-docs/):
+
+- [00 - Architecture overview](agent-docs/00-overview.md)
+- [01 - Models and decorators](agent-docs/01-models-and-decorators.md)
+- [02 - ObjectPool](agent-docs/02-object-pool.md)
+- [03 - IndexedDB and persistence](agent-docs/03-indexeddb-and-persistence.md)
+- [04 - Lazy loading](agent-docs/04-lazy-loading.md)
+- [05 - Sync groups](agent-docs/05-sync-groups.md)
+- [06 - Transactions and undo](agent-docs/06-transactions-and-undo.md)
+- [07 - Realtime sync](agent-docs/07-realtime-sync.md)
+- [08 - React integration](agent-docs/08-react-integration.md)
+- [09 - Headless and agents](agent-docs/09-headless-and-agents.md)
+- [10 - Inverse links and reactivity](agent-docs/10-inverse-links-and-reactivity.md)
+- [11 - Schema-first authoring](agent-docs/11-schema-first-authoring.md)
 
 ## Project structure
 
-```
+```text
 .
-├── packages/
-│   └── sync-engine/                 Publishable library (npm: sync-engine)
-│       ├── src/
-│       │   ├── core/                Engine internals
-│       │   └── react/               SyncProvider + hooks
-│       └── __tests__/
-├── webapp/                          Next.js demo app (reference UI)
-│   ├── app/
-│   └── lib/models/                  Domain models
-├── go/                              Reference backend (Go + Gin + Bun ORM)
-│   ├── cmd/server/main.go
-│   ├── internal/
-│   │   ├── config/                  SERVICE_MODE: all | stateless | stateful
-│   │   ├── database/                Bun models, changelog queries
-│   │   ├── sync/                    Broadcaster + Listener (LISTEN/NOTIFY)
-│   │   ├── handler/                 Bootstrap, transactions, SSE
-│   │   └── types/
-│   └── migrations/
-├── agent-docs/                      Architecture and design docs
-├── docker-compose.yml
-└── Makefile
+|-- packages/sync-engine/  # publishable TypeScript library
+|-- webapp/                # Next.js demo app
+|-- go/                    # reference Go backend
+|-- agent-docs/            # architecture and API notes
+|-- docker-compose.yml
+`-- Makefile
 ```
 
 ## Tech stack
 
 - **Client**: TypeScript, MobX, IndexedDB, EventSource (SSE)
 - **Reference server**: Go, Gin, Bun ORM, Postgres (LISTEN/NOTIFY), pgx
-- **Protocol**: Append-only changelog, monotonic syncId, sync group filtering
+- **Protocol**: append-only changelog, monotonic sync id, sync group filtering
