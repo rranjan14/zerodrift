@@ -64,6 +64,70 @@ state: Completed  ← SSE delta received, syncId matched
 
 This two-step completion ensures the client never gets ahead of its own confirmation — if the SSE delta for your edit also triggers collection invalidations or cascade operations, those all run before your transaction is truly complete.
 
+## Routing commits: `routeCommit`
+
+Wire `StoreManagerConfig.routeCommit` to inspect, suppress, or redirect user-initiated commits before they hit the pool or transaction queue. The hook fires from `commitCreate` (before pool insert + enqueue) and `commitUpdate` (before enqueue), with a discriminated `CommitIntent`:
+
+```ts
+new StoreManager({
+  // ...
+  routeCommit: (op) => {
+    // op: { kind: "create" | "update", model, modelName, [changes, previousData] }
+    if (op.kind === "update" && shouldFork(op.model)) {
+      const before = op.previousData(); // lazy — only serializes if called
+      const [clone] = store.materializePoolOnly("Object", [{
+        ...before,
+        id: draftId(op.model.id),
+        layerId: "draft",
+      }]);
+      return {
+        action: "redirect",
+        modelId: clone.id,
+        restoreOriginal: true,
+      };
+    }
+    // returning void lets the engine continue normally
+  },
+});
+```
+
+The return contract is intentionally narrow: return nothing (`void`) to let the original op proceed, `"skip"` to suppress it completely (for `create`, the pool insert is skipped too), or a `{ action: "redirect", modelId, modelName?, restoreOriginal? }` object to enqueue the intent against a different pool model. There is deliberately no `"proceed"` token — absence of a return *is* proceed.
+
+`op.previousData()` (update intents only) is a memoized accessor for the model's serialized state *before* the edit's setters ran — the live instance is already mutated by the time the hook fires. It's a function, not a field, so an adopter that only inspects `changes` pays no serialization cost.
+
+For redirected updates, `restoreOriginal: true` restores the originally edited model's boxes to `oldValue` via `setQuiet`, then the engine replays the `newValue`s onto the target with commit routing temporarily suppressed (so the replay's own `save()` doesn't re-enter `routeCommit` — adopters never need a recursion guard).
+
+A throwing router is caught and routed to `onError` with `kind: "beforeCommit"`; the engine then proceeds as if the hook returned `void`. A redirect whose target model is missing is treated as a failed divert, not a fall-through: it emits `onError`, honors `restoreOriginal` if requested, and **drops the write** rather than silently committing it back onto the source the adopter explicitly diverted away from. An SSE/refresh reconciles the pool.
+
+Delta-driven hydrates and SSE inserts do NOT fire this hook — it's scoped to writes that flow through `BaseModel.save()` / `commitCreate`. Field-value canonicalization belongs in `applyFieldTransforms`; commit redirection (which model gets the transaction) belongs here.
+
+### Materializing earlier: `onModelTouched`
+
+`routeCommit` fires at `save()` — the only point with a complete, clean change set. But sometimes you need a side-effect *before* the commit: e.g. the UI should flip to a draft layer the instant the user starts editing, not after a debounced/explicit save. `StoreManagerConfig.onModelTouched` fires synchronously inside the property setter, on the **clean→dirty transition** (a model's first pending change since its last save/discard):
+
+```ts
+new StoreManager({
+  onModelTouched: (model, modelName) => {
+    if (onDefaultLayer(model)) {
+      store.clonePoolOnly(defaultLayerObjects(), (d) => ({
+        ...d, id: draftId(d.id), layerId: "draft",
+      }));                       // build the scaffold up front
+    }
+  },
+  routeCommit: (op) => {
+    if (op.kind === "update" && onDefaultLayer(op.model)) {
+      return { action: "redirect", modelId: draftId(op.model.id), restoreOriginal: true };
+    }
+  },
+});
+```
+
+Keep the two split: `onModelTouched` **builds** the redirect target eagerly; `routeCommit` **diverts** the write onto it at save. Don't try to redirect from `onModelTouched` itself — at first-change you have only one property and the user keeps mutating the original instance, so a setter-time redirect would need write-forwarding/identity-swap, which breaks the pool's one-instance-per-id invariant.
+
+Semantics: fires once per dirty cycle (not per property — a second edit while still dirty is silent), and again after a `save()`/`discard` resets `pendingChanges`. It is **suppressed during the engine's own redirect replay** (the `restoreOriginal`+replay path's `assign()` onto the draft target must not surface as a user-facing first edit), and never fires for delta/SSE hydrates (those bypass the setter). A throwing handler is caught and routed to `onError` with `kind: "onModelTouched"`; the setter still completes.
+
+It runs on the setter hot path. The no-config path is a single boolean read (`hasModelTouchedHandler`). If your handler does heavy work (cloning a large layer), note that deferring it with `queueMicrotask` risks a synchronous `save()` in the same tick outrunning it — and `routeCommit`'s missing-target path then *drops* that first write. For autosave/synchronous-save flows, keep the materialization synchronous.
+
 ## Batching
 
 `TransactionQueue` debounces flushes by 50ms. This means if you do:

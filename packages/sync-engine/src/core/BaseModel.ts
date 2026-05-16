@@ -96,8 +96,10 @@ export class BaseModel {
     if (oldValue === newValue) {
       return;
     }
-    BaseModel.storeManager?.registerAtomicTouch(this);
+    const sm = BaseModel.storeManager;
+    sm?.registerAtomicTouch(this);
     if (!this.pendingChanges.has(propName)) {
+      const wasClean = this.pendingChanges.size === 0;
       const meta = ModelRegistry.getMetaForInstance(this);
       const propMeta = meta?.properties.get(propName);
       const serialized =
@@ -116,6 +118,12 @@ export class BaseModel {
           }
         }
         this.maintainParentLinks(meta.name, propName, oldValue, newValue);
+      }
+
+      // Clean→dirty transition: fire after parent links are consistent so an
+      // adopter materializing a draft scaffold sees correct inverse links.
+      if (wasClean && sm != null && sm.hasModelTouchedHandler && meta != null) {
+        sm.fireModelTouched(this, meta.name);
       }
     }
   }

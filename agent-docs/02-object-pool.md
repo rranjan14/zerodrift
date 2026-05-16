@@ -115,6 +115,14 @@ Adopters never call `invalidate()` or push children into parents by hand. See **
 
 This is critical for the refresh APIs (`refreshCollection`, `refreshModels`, `refreshAllOfModel`), which re-fetch data from the server without breaking existing references.
 
+## Pool-only inserts: `materializePoolOnly`
+
+`StoreManager.materializePoolOnly(modelName, records)` inserts server-shaped records straight into the pool with no `CreateTransaction` and no IDB write. It validates every record has a string `id`, rejects collisions by default, and calls `objectPool.hydrateAndPut` — the same insert path SSE uses. Inverse-link wiring, `@ReferenceCollection` membership, and `notifyModelChanged` reactivity all fire automatically.
+
+Use it for optimistic in-memory mirrors while the server's authoritative version is in flight — e.g. materializing draft-layer `Object` records under ids like `draftLayerId:objectId`. When the server's records eventually arrive via SSE on the same ids, pass `{ onCollision: "hydrate" }` only when you intentionally want the same in-place `hydrate()` behavior as SSE / refresh paths.
+
+`StoreManager.clonePoolOnly(sources, transform)` is a convenience wrapper for cloning existing instances into pool-only mirrors. It serializes each source, runs `transform(data, source)`, requires a different `id`, then delegates to `materializePoolOnly`.
+
 ## Pool vs IndexedDB
 
 It's worth being explicit about the division of responsibility:

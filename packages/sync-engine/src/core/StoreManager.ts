@@ -67,6 +67,10 @@ import {
   type FieldTransform,
   type EngineErrorContext,
   type EngineErrorHandler,
+  type CommitIntent,
+  type CommitRouteHandler,
+  type CommitRouteResult,
+  type OnModelTouchedHandler,
 } from "./types";
 
 /**
@@ -354,6 +358,43 @@ export interface StoreManagerConfig<TContext = unknown> {
   ) => FieldTransform<TContext> | undefined;
 
   /**
+   * Route user-initiated commits before they hit the pool / transaction queue.
+   * Fires from `commitCreate` (before pool insert + enqueue) and
+   * `commitUpdate` (before enqueue). Returning `"skip"` suppresses the
+   * original op. Returning a redirect asks the engine to replay the intent
+   * against a different model id, optionally restoring the originally edited
+   * model's boxes to their pre-edit values.
+   *
+   * Delta-driven hydrates and SSE inserts do NOT fire this hook; it's
+   * scoped to user/agent writes that flow through `BaseModel.save()` or
+   * direct `commitCreate` calls.
+   *
+   * Pair with `materializePoolOnly` / `clonePoolOnly` when the redirect target
+   * is a pool-only optimistic mirror (e.g. draft layers waiting on a server
+   * fork-fetch).
+   */
+  routeCommit?: CommitRouteHandler;
+
+  /**
+   * Fired the instant a clean model becomes dirty — its first pending change
+   * since the last save/discard — synchronously inside the property setter,
+   * before any `save()`. Use it for eager side-effects that must not wait for
+   * a commit: e.g. materializing a draft-layer scaffold (`materializePoolOnly`)
+   * the moment the user touches a default-layer object, so the UI can switch
+   * to the draft immediately. The actual write is still routed at `save()`
+   * via `routeCommit` — keep the two split (this builds the redirect target;
+   * `routeCommit` diverts the write onto it).
+   *
+   * Runs on the setter hot path: keep it fast, or defer heavy work yourself
+   * (mind that a synchronous `save()` in the same tick would then outrun it,
+   * and `routeCommit`'s missing-target path drops the write).
+   *
+   * NOT fired during the engine's own redirect replay, nor for delta-driven
+   * hydrates / SSE inserts (those bypass the setter).
+   */
+  onModelTouched?: OnModelTouchedHandler;
+
+  /**
    * Hooks for undoing/redoing remote side-effects committed via non-model APIs
    * (bulk-mutation endpoints, server-side workflow runs, etc.). The engine
    * tracks these on the same undo stack as model transactions; when the user
@@ -393,6 +434,7 @@ export class StoreManager<TContext = unknown> {
   private context: TContext | undefined = undefined;
   private fieldTransforms = new Map<string, FieldTransform<TContext>>();
   hasFieldTransforms = false;
+  hasModelTouchedHandler = false;
   private _phase = BootstrapPhase.Idle;
   private _error: Error | null = null;
   private stopped = false;
@@ -447,6 +489,11 @@ export class StoreManager<TContext = unknown> {
    * `null` when no scope is active. Mutations register themselves via
    * `registerAtomicTouch` (called from `BaseModel.propertyChanged`). */
   private activeAtomicScope: Set<BaseModel> | null = null;
+  /** True only while the engine replays a redirected commit onto its target.
+   * Gates every user-intent hook (`routeCommit`, `onModelTouched`) so the
+   * engine's own `assign()`/`save()` during replay isn't mistaken for a
+   * fresh user edit. */
+  private suppressUserIntentHooks = false;
 
   constructor(config: StoreManagerConfig<TContext>) {
     this.config = config;
@@ -498,6 +545,7 @@ export class StoreManager<TContext = unknown> {
       }
       this.hasFieldTransforms = this.fieldTransforms.size > 0;
     }
+    this.hasModelTouchedHandler = config.onModelTouched != null;
     BaseModel.storeManager = this; // wire auto-commit
   }
 
@@ -915,9 +963,7 @@ export class StoreManager<TContext = unknown> {
     if (fromMeta != null && fromMeta.length > 0) {
       return fromMeta;
     }
-    return this.seededSyncGroups.length > 0
-      ? this.seededSyncGroups
-      : undefined;
+    return this.seededSyncGroups.length > 0 ? this.seededSyncGroups : undefined;
   }
 
   /**
@@ -1035,6 +1081,16 @@ export class StoreManager<TContext = unknown> {
     if (meta == null) {
       return;
     }
+    if (this.config.routeCommit != null && !this.suppressUserIntentHooks) {
+      const route = this.resolveCommitRoute({
+        kind: "create",
+        model,
+        modelName: meta.name,
+      });
+      if (this.applyCreateRoute(model, meta, route)) {
+        return;
+      }
+    }
     model.makeModelObservable();
     this.objectPool.put(meta.name, model);
     const data = model.serialize();
@@ -1046,7 +1102,216 @@ export class StoreManager<TContext = unknown> {
     modelName: string,
     changes: Record<string, PropertyChange>,
   ) {
+    if (this.config.routeCommit != null && !this.suppressUserIntentHooks) {
+      // No pool entry → nothing for the hook to inspect; let the enqueue
+      // proceed so the txqueue's own crash-recovery / target-deleted logic
+      // is the single source of truth for "model gone."
+      const model = this.objectPool.getById(modelName, modelId);
+      if (model != null) {
+        let previousData: Record<string, unknown> | undefined;
+        const route = this.resolveCommitRoute({
+          kind: "update",
+          model,
+          modelName,
+          changes,
+          previousData: () =>
+            (previousData ??= this.previousDataFor(model, changes)),
+        });
+        if (this.applyUpdateRoute(model, modelName, changes, route)) {
+          return;
+        }
+      }
+    }
     this.transactionQueue.enqueueUpdate(modelId, modelName, changes);
+  }
+
+  private resolveCommitRoute(
+    intent: CommitIntent,
+  ): CommitRouteResult | undefined {
+    const hook = this.config.routeCommit;
+    if (hook == null) {
+      return undefined;
+    }
+    try {
+      return hook(intent) ?? undefined;
+    } catch (err) {
+      this.emitError(err, {
+        kind: "beforeCommit",
+        opKind: intent.kind,
+        modelName: intent.modelName,
+        modelId: intent.model.id,
+      });
+      return undefined;
+    }
+  }
+
+  private applyCreateRoute(
+    model: BaseModel,
+    meta: ModelMeta,
+    route: CommitRouteResult | undefined,
+  ): boolean {
+    if (route === undefined) {
+      return false;
+    }
+    if (route === "skip") {
+      return true;
+    }
+    const modelName = route.modelName ?? meta.name;
+    const data = { ...model.serialize(), id: route.modelId };
+    this.materializePoolOnly(modelName, [data], { onCollision: "error" });
+    this.transactionQueue.enqueueCreate(route.modelId, modelName, data);
+    return true;
+  }
+
+  private applyUpdateRoute(
+    source: BaseModel,
+    sourceModelName: string,
+    changes: Record<string, PropertyChange>,
+    route: CommitRouteResult | undefined,
+  ): boolean {
+    if (route === undefined) {
+      return false;
+    }
+    if (route === "skip") {
+      return true;
+    }
+
+    const restoreSource = () => {
+      if (route.restoreOriginal === true) {
+        for (const [propName, change] of Object.entries(changes)) {
+          source.setQuiet(propName, change.oldValue);
+        }
+      }
+    };
+
+    const targetModelName = route.modelName ?? sourceModelName;
+    const target = this.objectPool.getById(targetModelName, route.modelId);
+    if (target == null) {
+      this.emitError(
+        new Error(
+          `routeCommit redirect target not found (model=${targetModelName}, id=${route.modelId})`,
+        ),
+        {
+          kind: "beforeCommit",
+          opKind: "update",
+          modelName: sourceModelName,
+          modelId: source.id,
+        },
+      );
+      // The adopter explicitly diverted away from the source — committing the
+      // edit back onto it would be the surprising outcome. Honor the requested
+      // restore and drop the write; an SSE/refresh will reconcile the pool.
+      restoreSource();
+      return true;
+    }
+
+    restoreSource();
+
+    const replay: Record<string, unknown> = {};
+    for (const [propName, change] of Object.entries(changes)) {
+      replay[propName] = change.newValue;
+    }
+
+    this.suppressUserIntentHooks = true;
+    try {
+      target.assign(replay);
+      target.save();
+    } finally {
+      this.suppressUserIntentHooks = false;
+    }
+    return true;
+  }
+
+  private previousDataFor(
+    model: BaseModel,
+    changes: Record<string, PropertyChange>,
+  ): Record<string, unknown> {
+    const previous = model.serialize();
+    for (const [propName, change] of Object.entries(changes)) {
+      previous[propName] = change.oldValue;
+    }
+    return previous;
+  }
+
+  /**
+   * Hydrate server-shaped records straight into the pool — no
+   * `CreateTransaction`, no server round-trip, no IDB write. Mirrors the insert
+   * path SSE uses (`ObjectPool.hydrateAndPut`), so inverse links,
+   * `@ReferenceCollection` membership, and `notifyModelChanged` reactivity all
+   * wire up automatically.
+   */
+  materializePoolOnly<T extends BaseModel = BaseModel>(
+    modelName: string,
+    records: Record<string, unknown>[],
+    options: { onCollision?: "error" | "hydrate" } = {},
+  ): T[] {
+    const meta = ModelRegistry.getModelMeta(modelName);
+    if (meta == null) {
+      throw new Error(`materializePoolOnly: unknown model "${modelName}".`);
+    }
+    const onCollision = options.onCollision ?? "error";
+    const instances: T[] = [];
+    for (const record of records) {
+      if (typeof record.id !== "string" || record.id === "") {
+        throw new Error(
+          `materializePoolOnly: record for ${modelName} must include a string id.`,
+        );
+      }
+      if (
+        onCollision === "error" &&
+        this.objectPool.getById(modelName, record.id) != null
+      ) {
+        throw new Error(
+          `materializePoolOnly: ${modelName}#${record.id} already exists in the pool.`,
+        );
+      }
+      instances.push(
+        this.objectPool.hydrateAndPut(modelName, meta, record) as T,
+      );
+    }
+    return instances;
+  }
+
+  /**
+   * Convenience wrapper around `materializePoolOnly` for cloning existing
+   * sources into pool-only optimistic mirrors.
+   *
+   * `transform` receives each source's serialized data plus the source
+   * instance and must return a fully-formed record with a different `id`.
+   * Use it to rewrite ids and any FK fields that should point at the
+   * new scope.
+   *
+   * Intended for optimistic in-memory mirrors while the server fork-fetch
+   * is in flight. When the server's records eventually arrive via SSE on
+   * the same ids, `hydrate()` runs in place and the pendingChanges rebase
+   * keeps any user edits the user has stacked on top.
+   *
+   * Throws if `transform` returns the source id unchanged — that would
+   * silently overwrite the original instance.
+   */
+  clonePoolOnly<T extends BaseModel>(
+    sources: T[],
+    transform: (
+      data: Record<string, unknown>,
+      source: T,
+    ) => Record<string, unknown>,
+  ): T[] {
+    const clones: T[] = [];
+    for (const source of sources) {
+      const meta = ModelRegistry.getMetaForInstance(source);
+      if (meta == null) {
+        continue;
+      }
+      const cloneData = transform(source.serialize(), source);
+      if (cloneData.id === source.id) {
+        throw new Error(
+          `clonePoolOnly: clone must have a different id than source ` +
+            `(model=${meta.name}, id=${source.id}). Rewrite \`id\` in \`transform\`.`,
+        );
+      }
+      clones.push(...this.materializePoolOnly<T>(meta.name, [cloneData]));
+    }
+    return clones;
   }
 
   /**
@@ -1620,6 +1885,29 @@ export class StoreManager<TContext = unknown> {
   /** @internal */
   registerAtomicTouch(model: BaseModel): void {
     this.activeAtomicScope?.add(model);
+  }
+
+  /** @internal Called from `BaseModel.propertyChanged` on the clean→dirty
+   * transition. Suppressed during the engine's own redirect replay so the
+   * draft target's `assign()` doesn't re-trigger a user-facing "first edit".
+   * BaseModel guards on `hasModelTouchedHandler` before calling. */
+  fireModelTouched(model: BaseModel, modelName: string): void {
+    if (this.suppressUserIntentHooks) {
+      return;
+    }
+    const hook = this.config.onModelTouched;
+    if (hook == null) {
+      return;
+    }
+    try {
+      hook(model, modelName);
+    } catch (err) {
+      this.emitError(err, {
+        kind: "onModelTouched",
+        modelName,
+        modelId: model.id,
+      });
+    }
   }
 
   // ── Undo / Redo ───────────────────────────────────────────────────────────
@@ -2589,6 +2877,7 @@ export class StoreManager<TContext = unknown> {
     this.poolSyncedFromIDB.clear();
     this.fieldTransforms.clear();
     this.hasFieldTransforms = false;
+    this.hasModelTouchedHandler = false;
     this.setPhase(BootstrapPhase.Idle);
   }
 

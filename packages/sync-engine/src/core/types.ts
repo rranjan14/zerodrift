@@ -159,6 +159,58 @@ export interface PropertyChange {
   newValue: unknown;
 }
 
+/**
+ * User-initiated commit intent passed to `StoreManagerConfig.routeCommit`.
+ * Discriminates on `kind` so adopters can route different ops.
+ */
+export type CommitIntent =
+  | { kind: "create"; model: BaseModel; modelName: string }
+  | {
+      kind: "update";
+      model: BaseModel;
+      modelName: string;
+      changes: Record<string, PropertyChange>;
+      /**
+       * The model's serialized state *before* this edit's setters ran (the
+       * live instance is already mutated by the time `routeCommit` fires).
+       * Lazy — serialization only happens if you call it. Memoized per
+       * intent, so repeated calls are free. Use it to seed a redirect
+       * target with the pre-edit baseline.
+       */
+      previousData: () => Record<string, unknown>;
+    };
+
+/**
+ * Return value from `routeCommit`. Returning nothing (`void`) lets the engine
+ * commit the original intent. `"skip"` suppresses it. A `redirect` object asks
+ * the engine to apply/enqueue the intent against a different model id.
+ */
+export type CommitRouteResult =
+  | "skip"
+  | {
+      action: "redirect";
+      modelName?: string;
+      modelId: string;
+      restoreOriginal?: boolean;
+    };
+
+export type CommitRouteHandler = (
+  intent: CommitIntent,
+) => CommitRouteResult | void;
+
+/**
+ * Fired the instant a clean model becomes dirty — its first pending change
+ * since the last save/discard. Runs synchronously inside the property setter,
+ * before any `save()`. Use it for eager side-effects that should not wait for
+ * a commit (e.g. materializing a draft-layer scaffold so the UI can switch
+ * immediately). The actual write is still routed at `save()` via
+ * `routeCommit`. NOT fired during the engine's own redirect replay.
+ */
+export type OnModelTouchedHandler = (
+  model: BaseModel,
+  modelName: string,
+) => void;
+
 /** Behavior when the parent of a `Reference` / `BackReference` is deleted. */
 export type OnDelete = "cascade" | "nullify" | "restrict";
 
@@ -239,6 +291,16 @@ export interface IStoreManager {
    * No-op when no atomic scope is active. Called from
    * `BaseModel.propertyChanged`; not part of the public adopter surface. */
   registerAtomicTouch(model: BaseModel): void;
+  /** True iff `StoreManagerConfig.onModelTouched` is configured.
+   * `BaseModel.propertyChanged` checks this before calling
+   * `fireModelTouched` so the no-config path stays a single boolean read
+   * on the clean→dirty transition. */
+  readonly hasModelTouchedHandler: boolean;
+  /** @internal Notify the StoreManager that `model` went from clean to
+   * dirty (its first pending change since the last save/discard). Fires
+   * `onModelTouched`; suppressed during the engine's own redirect replay.
+   * Called from `BaseModel.propertyChanged`. */
+  fireModelTouched(model: BaseModel, modelName: string): void;
 }
 
 /**
@@ -281,7 +343,14 @@ export type EngineErrorContext =
       phase: "undo" | "redo";
       changeLogId: string;
       actionType?: string;
-    };
+    }
+  | {
+      kind: "beforeCommit";
+      opKind: "create" | "update";
+      modelName: string;
+      modelId: string;
+    }
+  | { kind: "onModelTouched"; modelName: string; modelId: string };
 
 export type EngineErrorHandler = (
   err: Error,
