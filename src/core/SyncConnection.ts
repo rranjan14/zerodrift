@@ -183,7 +183,12 @@ export class SyncConnection extends BaseSSEConnection {
   }
 
   protected onReconnect(): void {
-    this.queue.resendCached();
+    // Fire-and-forget: resend is best-effort and self-heals on the next
+    // reconnect (the cache is durable), so a rejection here — typically the
+    // teardown/closing-DB race — must not become an unhandledRejection.
+    // resendCached() already reports its own domain failures via the queue's
+    // error reporter; this catch only absorbs the unexpected throw.
+    void this.queue.resendCached().catch(() => {});
   }
 
   // =========================================================================

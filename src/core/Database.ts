@@ -875,12 +875,35 @@ export class Database implements StorageAdapter {
   // Transaction cache
   // =========================================================================
 
-  async cacheTransaction(data: unknown): Promise<number | null> {
+  /**
+   * Open a `__transactions` transaction, tolerating the brief window where
+   * the connection is closing but not yet nulled — a cross-tab `versionchange`
+   * upgrade, or teardown racing an SSE reconnect. In that window `this.db` is
+   * still non-null yet `.transaction()` throws `InvalidStateError` ("the
+   * database connection is closing"). Returns `null` so callers degrade
+   * gracefully: the transaction cache is a best-effort resend buffer that
+   * self-heals on the next clean connection.
+   */
+  private openTxCacheTx(mode: IDBTransactionMode): IDBTransaction | null {
     if (this.db == null) {
       return null;
     }
+    try {
+      return this.db.transaction("__transactions", mode);
+    } catch (err) {
+      if ((err as { name?: string } | null)?.name === "InvalidStateError") {
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  async cacheTransaction(data: unknown): Promise<number | null> {
+    const tx = this.openTxCacheTx("readwrite");
+    if (tx == null) {
+      return null;
+    }
     return new Promise((resolve, reject) => {
-      const tx = this.db!.transaction("__transactions", "readwrite");
       const r = tx.objectStore("__transactions").add(data);
       r.onsuccess = () => resolve(r.result as number);
       r.onerror = () => reject(r.error);
@@ -888,11 +911,11 @@ export class Database implements StorageAdapter {
   }
 
   async getCachedTransactions(): Promise<{ idbKey: number; data: unknown }[]> {
-    if (this.db == null) {
+    const tx = this.openTxCacheTx("readonly");
+    if (tx == null) {
       return [];
     }
     return new Promise((resolve, reject) => {
-      const tx = this.db!.transaction("__transactions", "readonly");
       const store = tx.objectStore("__transactions");
       const out: { idbKey: number; data: unknown }[] = [];
       const cursor = store.openCursor();
@@ -910,10 +933,13 @@ export class Database implements StorageAdapter {
   }
 
   async deleteCachedTransactions(idbKeys: number[]): Promise<void> {
-    if (this.db == null || idbKeys.length === 0) {
+    if (idbKeys.length === 0) {
       return;
     }
-    const tx = this.db.transaction("__transactions", "readwrite");
+    const tx = this.openTxCacheTx("readwrite");
+    if (tx == null) {
+      return;
+    }
     const store = tx.objectStore("__transactions");
     for (const key of idbKeys) {
       store.delete(key);
@@ -922,19 +948,19 @@ export class Database implements StorageAdapter {
   }
 
   async clearCachedTransactions(): Promise<void> {
-    if (this.db == null) {
+    const tx = this.openTxCacheTx("readwrite");
+    if (tx == null) {
       return;
     }
-    const tx = this.db.transaction("__transactions", "readwrite");
     tx.objectStore("__transactions").clear();
     return this.waitForTransaction(tx);
   }
 
   async updateCachedTransaction(idbKey: number, data: unknown): Promise<void> {
-    if (this.db == null) {
+    const tx = this.openTxCacheTx("readwrite");
+    if (tx == null) {
       return;
     }
-    const tx = this.db.transaction("__transactions", "readwrite");
     tx.objectStore("__transactions").put(data, idbKey);
     return this.waitForTransaction(tx);
   }

@@ -22,6 +22,7 @@ export const createBrowserSSEFactory =
 export abstract class BaseSSEConnection {
   private eventSource: SSEClient | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private stopped = false;
 
   constructor(
     protected url: string,
@@ -34,11 +35,18 @@ export abstract class BaseSSEConnection {
   }
 
   disconnect() {
+    // Permanent teardown. Block any in-flight or future reconnect: a pending
+    // `onerror` triggered by the close() below — or a timer already scheduled
+    // before this call — must not re-open the source after the owning
+    // StoreManager has torn down its Database. That post-teardown reopen is
+    // what surfaces as "the database connection is closing".
+    this.stopped = true;
     if (this.reconnectTimer != null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     if (this.eventSource != null) {
+      this.eventSource.onerror = null;
       this.eventSource.close();
       this.eventSource = null;
       this.onClose();
@@ -64,6 +72,9 @@ export abstract class BaseSSEConnection {
   protected onClose(): void {}
 
   private openEventSource() {
+    if (this.stopped) {
+      return;
+    }
     if (this.eventSource != null) {
       this.eventSource.close();
       this.eventSource = null;
@@ -101,7 +112,7 @@ export abstract class BaseSSEConnection {
   }
 
   private scheduleReconnect() {
-    if (this.reconnectTimer != null) {
+    if (this.stopped || this.reconnectTimer != null) {
       return;
     }
     this.reconnectTimer = setTimeout(() => {
