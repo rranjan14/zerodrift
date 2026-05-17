@@ -1,0 +1,17 @@
+{
+  // Emitting build: JS + .d.ts into dist/, source files only (no tests).
+  // The base tsconfig is typecheck-only (noEmit) and includes __tests__ +
+  // the test-only @zerodrift/* path alias; both are overridden here.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    // The @zerodrift/* alias is test-only; src uses relative imports, so
+    // it's irrelevant to the build. Cleared as hygiene, not necessity.
+    "paths": {}
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["__tests__", "dist", "node_modules"]
+}

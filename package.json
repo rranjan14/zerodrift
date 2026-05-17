@@ -1,8 +1,99 @@
 {
-  "name": "sync-engine-monorepo",
-  "private": true,
+  "name": "zerodrift",
+  "version": "0.1.0",
+  "private": false,
+  "description": "A TypeScript local-first sync engine: synchronous in-memory reads, optimistic writes, realtime SSE sync, offline IndexedDB persistence. Runs in the browser and in Node.",
+  "license": "MIT",
+  "author": "selasijean <selasijean@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/selasijean/zerodrift.git"
+  },
   "workspaces": [
-    "packages/*",
-    "webapp"
-  ]
+    "examples/webapp"
+  ],
+  "homepage": "https://github.com/selasijean/zerodrift#readme",
+  "bugs": "https://github.com/selasijean/zerodrift/issues",
+  "keywords": [
+    "local-first",
+    "sync",
+    "offline",
+    "optimistic",
+    "indexeddb",
+    "sse",
+    "mobx",
+    "realtime",
+    "crdt-alternative"
+  ],
+  "type": "module",
+  "main": "./dist/core/index.js",
+  "module": "./dist/core/index.js",
+  "types": "./dist/core/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/core/index.d.ts",
+      "default": "./dist/core/index.js"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "default": "./dist/react/index.js"
+    },
+    "./schema": {
+      "types": "./dist/schema/index.d.ts",
+      "default": "./dist/schema/index.js"
+    },
+    "./internal": {
+      "types": "./dist/core/internal.d.ts",
+      "default": "./dist/core/internal.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "prepack": "npm run clean && npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint \"src/**/*.{ts,tsx}\" \"__tests__/**/*.ts\""
+  },
+  "dependencies": {
+    "mobx": "^6.15.0"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "zod": ">=4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "zod": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@swc/core": "^1.15.24",
+    "@types/react": "^19.2.14",
+    "@vitest/coverage-v8": "^4.1.4",
+    "eslint": "^10.2.0",
+    "eslint-config-prettier": "^10.1.8",
+    "fake-indexeddb": "^6.2.5",
+    "jsdom": "^29.0.2",
+    "prettier": "^3.8.3",
+    "react": "^19.2.5",
+    "typescript": "^6.0.2",
+    "typescript-eslint": "^8.58.2",
+    "unplugin-swc": "^1.5.9",
+    "vitest": "^4.1.4",
+    "zod": "^4.4.3"
+  }
 }

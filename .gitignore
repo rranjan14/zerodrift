@@ -1,6 +1,10 @@
 # Node (root-level, if any)
 node_modules/
 
+# Build output (published to npm via package "files" + prepack, never committed)
+dist/
+*.tsbuildinfo
+
 # IDE
 .idea/
 .vscode/

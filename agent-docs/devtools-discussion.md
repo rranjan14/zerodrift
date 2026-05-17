@@ -86,8 +86,8 @@ After that, #4 (schema graph) and #5 (cascade preview) come naturally because th
 
 ## Open questions to resolve when we resume
 
-1. **Where does `dumpDebugState` live?** `core/index.ts` (always exported) or a separate `sync-engine/devtools` subpath that tree-shakes out of prod bundles? Probably the latter — devtool helpers shouldn't ship to users by default.
-2. **Should `<SyncDevtools />` be in `sync-engine/react` or its own `sync-engine/devtools/react` subpath?** Same tree-shaking concern.
+1. **Where does `dumpDebugState` live?** `core/index.ts` (always exported) or a separate `zerodrift/devtools` subpath that tree-shakes out of prod bundles? Probably the latter — devtool helpers shouldn't ship to users by default.
+2. **Should `<SyncDevtools />` be in `zerodrift/react` or its own `zerodrift/devtools/react` subpath?** Same tree-shaking concern.
 3. **Authorization** — should `dumpDebugState` redact anything? The pool may contain user-content. Probably gate behind `process.env.NODE_ENV !== "production"` plus an explicit `enableDebug` flag.
 4. **Performance** — running the devtool overlay on a 100k-record pool would be terrible. Need pagination or virtualization in the pool inspector from day one.
 5. **Reactivity for the overlay itself** — should the overlay subscribe to `objectPool` events, or poll `dumpDebugState` on a timer? Subscriptions give live updates; polling is simpler.

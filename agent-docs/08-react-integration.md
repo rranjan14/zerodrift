@@ -210,8 +210,8 @@ Two patterns for rendering components that depend on `<SyncProvider>` without hi
 Best when each story has a stable fixture set. The mock data flows through the normal bootstrap path, so coverage state, loaded-models tracking, and IDB are all consistent with a real session.
 
 ```tsx
-import { SyncProvider } from "sync-engine/react";
-import { MemoryAdapter } from "sync-engine";
+import { SyncProvider } from "zerodrift/react";
+import { MemoryAdapter } from "zerodrift";
 import "./models";
 
 export const Default = {
@@ -245,8 +245,8 @@ Best for stories that mutate pool state mid-render or want to compose fixtures f
 
 ```tsx
 import { useEffect } from "react";
-import { useSyncEngine, SyncProvider } from "sync-engine/react";
-import { MemoryAdapter } from "sync-engine";
+import { useSyncEngine, SyncProvider } from "zerodrift/react";
+import { MemoryAdapter } from "zerodrift";
 
 function Seed({ children }: { children: React.ReactNode }) {
   const { sm } = useSyncEngine();

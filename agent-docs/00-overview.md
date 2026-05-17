@@ -2,7 +2,7 @@
 
 This is a real-time collaborative data sync engine. Think of it as a client-side database that stays automatically in sync with a server and with all other connected clients, while also persisting locally so the app survives page refreshes and works offline.
 
-The engine is a publishable npm package at `packages/sync-engine`. All source files live under `packages/sync-engine/src/`. When file paths appear in these docs as `core/X.ts` or `react/X.ts`, they are relative to `packages/sync-engine/src/`.
+The engine is a publishable npm package (`zerodrift`) at the repository root. All source files live under `src/`. When file paths appear in these docs as `core/X.ts` or `react/X.ts`, they are relative to `src/`.
 
 ## The Four Pillars
 
@@ -42,7 +42,7 @@ The engine is a publishable npm package at `packages/sync-engine`. All source fi
 
 ## The Major Components
 
-All files are under `packages/sync-engine/src/`.
+All files are under `src/`.
 
 | Component | File | One-line role |
 |---|---|---|

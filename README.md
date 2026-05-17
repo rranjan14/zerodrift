@@ -1,4 +1,4 @@
-# sync-engine
+# zerodrift
 
 A TypeScript local-first sync engine. Reads are synchronous from an in-memory pool, writes are optimistic, state stays current across tabs and clients via SSE, and everything persists locally so the app survives reloads and works offline. The same engine runs in Node so agents and background workers can hold a live model just like a browser tab.
 
@@ -17,7 +17,7 @@ You bring the backend. The client speaks a small three-endpoint protocol that ca
 ## Install
 
 ```bash
-npm install sync-engine
+npm install zerodrift
 ```
 
 Optional packages depend on the surface you use:
@@ -27,16 +27,16 @@ npm install zod         # for entityFromZod(...) schema authoring
 npm install eventsource # for Node/headless SSE clients
 ```
 
-If you use decorators, import `reflect-metadata` once before model classes are loaded.
+If you use the decorator authoring path, enable `experimentalDecorators` in your `tsconfig.json` (or the SWC/Babel equivalent). `reflect-metadata` is **not** required — the engine never reads `design:type` metadata.
 
 ## Import paths
 
 | Import | Use it for |
 |---|---|
-| `sync-engine` | `StoreManager`, `BaseModel`, decorators, `MemoryAdapter`, relation field types (`RefCollection`/`BackRef`/`OwnedRefs`), and the config / error / sync types. The curated, stable surface. |
-| `sync-engine/schema` | `defineSchema`, `entityFromZod`, field builders, links, extensions, and typed `store.<entity>.*` APIs. |
-| `sync-engine/react` | `<SyncProvider>` and React hooks: `useRecord`, `useRecords`, `useRecordsByIndex`, `useRelation`, `useBatch`, `useUndoRedo`. |
-| `sync-engine/internal` | Engine machinery (`ObjectPool`, `TransactionQueue`, `SyncConnection`, `ModelRegistry`, …) for tooling/tests. **No stability promise** — may change between releases. |
+| `zerodrift` | `StoreManager`, `BaseModel`, decorators, `MemoryAdapter`, relation field types (`RefCollection`/`BackRef`/`OwnedRefs`), and the config / error / sync types. The curated, stable surface. |
+| `zerodrift/schema` | `defineSchema`, `entityFromZod`, field builders, links, extensions, and typed `store.<entity>.*` APIs. |
+| `zerodrift/react` | `<SyncProvider>` and React hooks: `useRecord`, `useRecords`, `useRecordsByIndex`, `useRelation`, `useBatch`, `useUndoRedo`. |
+| `zerodrift/internal` | Engine machinery (`ObjectPool`, `TransactionQueue`, `SyncConnection`, `ModelRegistry`, …) for tooling/tests. **No stability promise** — may change between releases. |
 
 ## Define your models
 
@@ -50,8 +50,8 @@ import {
   Reference,
   LazyReferenceCollection,
   LoadStrategy,
-} from "sync-engine";
-import type { RefCollection } from "sync-engine";
+} from "zerodrift";
+import type { RefCollection } from "zerodrift";
 
 @ClientModel({ name: "Team", loadStrategy: LoadStrategy.Eager })
 export class Team extends BaseModel {
@@ -80,7 +80,7 @@ See [agent-docs/01-models-and-decorators.md](agent-docs/01-models-and-decorators
 
 ## Schema-first with Zod
 
-If your record shapes already live in Zod, use `entityFromZod(...)` as the schema authoring path. Zod owns the field types; `fields` overrides add sync-engine metadata such as foreign keys and indexes.
+If your record shapes already live in Zod, use `entityFromZod(...)` as the schema authoring path. Zod owns the field types; `fields` overrides add zerodrift metadata such as foreign keys and indexes.
 
 ```ts
 import { z } from "zod";
@@ -91,7 +91,7 @@ import {
   fields as s,
   link,
   LoadStrategy,
-} from "sync-engine/schema";
+} from "zerodrift/schema";
 
 const TeamRecord = z.object({
   id: z.string(),
@@ -150,8 +150,7 @@ Both authoring paths compile to the same registry, so schema entities and decora
 Wrap your app in `<SyncProvider>` once. Import your model file as a side effect so decorators run before bootstrap.
 
 ```tsx
-import "reflect-metadata";
-import { SyncProvider } from "sync-engine/react";
+import { SyncProvider } from "zerodrift/react";
 import "./models";
 
 export default function Providers({ children }) {
@@ -224,9 +223,8 @@ See [agent-docs/08-react-integration.md](agent-docs/08-react-integration.md) for
 The same `StoreManager` runs without React or a browser. Use `MemoryAdapter` for in-process agents and tests, or implement `StorageAdapter` for durable storage.
 
 ```ts
-import "reflect-metadata";
 import EventSource from "eventsource";
-import { MemoryAdapter, StoreManager } from "sync-engine";
+import { MemoryAdapter, StoreManager } from "zerodrift";
 import "./models";
 
 const sm = new StoreManager({
@@ -315,26 +313,12 @@ The client reconnects with `?since=<lastSyncId>` so the server can replay missed
 
 ## Run the demo
 
-This repo includes a Go backend (`go/`) and a Next.js demo app (`webapp/`).
-
-Prerequisites: Docker, Go 1.22+, Node 18+, and Make.
-
-```bash
-make go-tidy
-make start-backend
-make install-webapp
-make run-webapp
-```
-
-Open [http://localhost:3000](http://localhost:3000) in two tabs to see sync in action.
-
-Useful commands:
+A reference Go backend + Next.js app that exercises the full sync loop
+locally live in [`examples/`](examples/). See [examples/README.md](examples/README.md)
+for the one-command-each setup:
 
 ```bash
-make ps
-make logs
-make stop-backend
-make clean
+cd examples && make start-backend && make run-webapp
 ```
 
 ## Documentation
@@ -357,13 +341,14 @@ Deeper material lives in [agent-docs/](agent-docs/):
 ## Project structure
 
 ```text
-.
-|-- packages/sync-engine/  # publishable TypeScript library
-|-- webapp/                # Next.js demo app
-|-- go/                    # reference Go backend
-|-- agent-docs/            # architecture and API notes
-|-- docker-compose.yml
-`-- Makefile
+.                      # the publishable zerodrift package (src/, __tests__/)
+|-- src/
+|-- agent-docs/         # architecture and API notes
+`-- examples/           # self-contained runnable demo (own Makefile + compose)
+    |-- webapp/         # Next.js demo app
+    |-- go/             # reference Go backend
+    |-- docker-compose.yml
+    `-- Makefile
 ```
 
 ## Tech stack

@@ -64,8 +64,7 @@ The factory receives the fully-constructed URL (including `lastSyncId` and sync 
 Models must be registered with the engine before `bootstrap()` is called. In a browser app, this happens naturally because the model files are imported by components. In a headless agent, you must import them explicitly:
 
 ```typescript
-import "reflect-metadata";
-import { StoreManager, MemoryAdapter } from "sync-engine";
+import { StoreManager, MemoryAdapter } from "zerodrift";
 import EventSource from "eventsource";
 
 // Side-effect import — registers all model classes with ModelRegistry
@@ -75,7 +74,7 @@ const sm = new StoreManager({ ... });
 await sm.bootstrap();
 ```
 
-The `reflect-metadata` polyfill must be imported once before any decorated class is used. It's a peer dependency of the engine.
+The model files must be imported (directly or transitively) before `bootstrap()` so their `@ClientModel` decorators have run and populated `ModelRegistry`. `reflect-metadata` is **not** needed — the engine registers metadata explicitly from decorator arguments and never reads `design:type`.
 
 ## Custom id generation with context
 
@@ -106,7 +105,7 @@ Context is read on demand at id-mint time, not captured — re-call `setContext`
 `applyFieldTransforms` is the registry-walk companion to `identifierFn`: at engine init it visits every `(model, property)` pair and asks the rule whether to install a transform. Whatever it returns runs inside the property setter (`issue.teamId = x`), receiving `(value, instance, ctx)`. Use it to apply cross-cutting input rewrites — layer/tenant prefixing, string normalization — without sprinkling per-field decorators across every model.
 
 ```typescript
-import { PropertyType, StoreManager } from "sync-engine";
+import { PropertyType, StoreManager } from "zerodrift";
 
 type LayerContext = { layerId: string };
 
@@ -326,7 +325,7 @@ onStatusChange: (connected) => {
 Headless deployments often need structured error reporting more than the browser does — a server-side process can't show toast notifications, and silent failures in eager loads or transaction retries can mask real outages. `StoreManagerConfig.onError` is a single hook that fires for every async failure the engine catches internally:
 
 ```typescript
-import { StoreManager, type EngineErrorContext } from "sync-engine";
+import { StoreManager, type EngineErrorContext } from "zerodrift";
 
 const sm = new StoreManager({
   workspaceId,

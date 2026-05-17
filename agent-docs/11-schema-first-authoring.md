@@ -5,8 +5,8 @@ An alternative to the decorator path in [`01-models-and-decorators.md`](01-model
 ```typescript
 import {
   defineSchema, entity, link, fields as s, LoadStrategy,
-} from "sync-engine/schema";
-import { createStore } from "sync-engine/schema";
+} from "zerodrift/schema";
+import { createStore } from "zerodrift/schema";
 
 export const schema = defineSchema({
   entities: {
@@ -254,7 +254,7 @@ Inside React, prefer `useUndoRedo()` and `useBatch()` — they subscribe to the 
 Computed and actions live outside the schema (which stays serializable):
 
 ```typescript
-import { extend } from "sync-engine/schema";
+import { extend } from "zerodrift/schema";
 
 const issueBehavior = extend(schema, "issue", {
   computed: {
@@ -335,7 +335,7 @@ Zod is an optional peer dependency. When installed:
 
 ```typescript
 import { z } from "zod";
-import { fromZod, entityFromZod } from "sync-engine/schema";
+import { fromZod, entityFromZod } from "zerodrift/schema";
 
 const ZodIssue = z.object({
   id: z.string(),
@@ -374,7 +374,7 @@ Override keys are constrained to fields actually declared on the Zod object, so 
 
 ## Typed React hooks
 
-In `sync-engine/react`:
+In `zerodrift/react`:
 
 Pass the `store.<entity>` namespace as the **handle** to the same read hooks
 used everywhere else (a decorator class is the other handle form):
@@ -384,7 +384,7 @@ import {
   useRecord,
   useRecords,
   useRecordsByIndex,
-} from "sync-engine/react";
+} from "zerodrift/react";
 
 const { data: issue } = useRecord(store.issue, issueId);
 const { data: teams } = useRecords(store.team);

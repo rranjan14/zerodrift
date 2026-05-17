@@ -39,7 +39,7 @@ import {
   link,
   fields as s,
   LoadStrategy,
-} from "sync-engine/schema";
+} from "zerodrift/schema";
 
 export const schema = defineSchema({
   entities: {
@@ -155,7 +155,7 @@ issueParent: link({
 Behavior is declared separately from schema so the schema stays serializable.
 
 ```typescript
-import { extend } from "sync-engine/schema";
+import { extend } from "zerodrift/schema";
 
 export const issueBehavior = extend(schema, "issue", {
   computed: {
