@@ -6,7 +6,7 @@ on:
 
 permissions:
   contents: write # create the GitHub Release
-  id-token: write # npm provenance (signed "published from this repo")
+  id-token: write # OIDC: tokenless npm publish + provenance
 
 jobs:
   publish:
@@ -21,6 +21,7 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
 
+      - run: npm install -g npm@latest # OIDC trusted publishing needs npm >= 11.5.1
       - run: npm ci
 
       # Fail loudly if the tag and package.json drifted apart
@@ -39,8 +40,6 @@ jobs:
 
       - name: Publish
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create GitHub Release
         run: gh release create "$GITHUB_REF_NAME" --generate-notes --verify-tag
