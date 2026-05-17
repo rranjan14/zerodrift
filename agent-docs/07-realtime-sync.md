@@ -52,13 +52,13 @@ The unit of real-time sync is a `DeltaPacket`:
 
 ```typescript
 interface DeltaPacket {
+  syncId: number;      // monotonically increasing watermark for the packet
   syncActions: SyncAction[];
   addedSyncGroups?: string[];
   removedSyncGroups?: string[];
 }
 
 interface SyncAction {
-  id: number;          // monotonically increasing sync ID
   modelName: string;   // "Issue"
   modelId: string;     // "issue-abc123"
   action: "I" | "U" | "D" | "A" | "V" | "C";
@@ -102,7 +102,7 @@ for (const action of packet.syncActions) {
 For each action, call `applySyncAction()` — see details below.
 
 **Step 6: Update `lastSyncId`**
-The highest `syncAction.id` in the packet becomes the new `lastSyncId` in `__meta`. This is the watermark for future reconnects.
+The packet's `syncId` becomes the new `lastSyncId` in `__meta`. This is the watermark for future reconnects.
 
 **Step 7: Resolve waiting transactions**
 Any `TransactionQueue` entries in the `awaitingSync` state that were waiting for this sync ID are marked `Completed` and removed from IDB.

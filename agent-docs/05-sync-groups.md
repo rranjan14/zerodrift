@@ -70,6 +70,7 @@ The server can **push** sync group changes to the client via the delta packet:
 
 ```typescript
 interface DeltaPacket {
+  syncId: number;
   syncActions: SyncAction[];
   addedSyncGroups?: string[];    // ["team-design"] — user just joined this team
   removedSyncGroups?: string[];  // ["team-eng"] — user left or was removed

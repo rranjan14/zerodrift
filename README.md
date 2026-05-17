@@ -1,5 +1,7 @@
 # zerodrift
 
+[![npm](https://img.shields.io/npm/v/zerodrift.svg)](https://www.npmjs.com/package/zerodrift)
+
 A TypeScript local-first sync engine. Reads are synchronous from an in-memory pool, writes are optimistic, state stays current across tabs and clients via SSE, and everything persists locally so the app survives reloads and works offline. The same engine runs in Node so agents and background workers can hold a live model just like a browser tab.
 
 You bring the backend. The client speaks a small three-endpoint protocol that can be implemented in any language. A reference Go backend and Next.js demo live in this repo so you can run the whole loop locally.
@@ -35,7 +37,7 @@ Decorator path: enable `experimentalDecorators` in your `tsconfig.json` (or the 
 |---|---|
 | `zerodrift` | `StoreManager`, `BaseModel`, decorators, `MemoryAdapter`, relation field types (`RefCollection`/`BackRef`/`OwnedRefs`), and the config / error / sync types. The curated, stable surface. |
 | `zerodrift/schema` | `defineSchema`, `entityFromZod`, field builders, links, extensions, and typed `store.<entity>.*` APIs. |
-| `zerodrift/react` | `<SyncProvider>` and React hooks: `useRecord`, `useRecords`, `useRecordsByIndex`, `useRelation`, `useBatch`, `useUndoRedo`. |
+| `zerodrift/react` | `<SyncProvider>` and React hooks: `useRecord`, `useRecords`, `useRecordsByIndex`, `useRelation`, `useBatch`, `useUndoRedo`, `useBootstrapStatus`. |
 | `zerodrift/internal` | Engine machinery (`ObjectPool`, `TransactionQueue`, `SyncConnection`, `ModelRegistry`, …) for tooling/tests. **No stability promise** — may change between releases. |
 
 ## Define your models
@@ -160,8 +162,9 @@ export default function Providers({ children }) {
         workspaceId: "workspace-123",
         transport: {
           bootstrapFetcher: async (type, options) => {
-            const since = options?.sinceSyncId ?? 0;
-            const res = await fetch(`/api/bootstrap?type=${type}&since=${since}`);
+            const res = await fetch(
+              `/api/bootstrap?type=${type}&lastSyncId=${options?.sinceSyncId ?? 0}`,
+            );
             return res.json();
           },
           transactionSender: async (batch) => {
@@ -295,9 +298,9 @@ SSE messages are delta packets:
 
 ```json
 {
+  "syncId": 5206,
   "syncActions": [
     {
-      "id": 5206,
       "modelName": "Issue",
       "modelId": "uuid",
       "action": "U",
@@ -309,7 +312,7 @@ SSE messages are delta packets:
 }
 ```
 
-The client reconnects with `?since=<lastSyncId>` so the server can replay missed events. See [agent-docs/07-realtime-sync.md](agent-docs/07-realtime-sync.md) for SSE details and [agent-docs/05-sync-groups.md](agent-docs/05-sync-groups.md) for scoped event delivery.
+The client reconnects with `?lastSyncId=<id>` so the server can replay missed events. See [agent-docs/07-realtime-sync.md](agent-docs/07-realtime-sync.md) for SSE details and [agent-docs/05-sync-groups.md](agent-docs/05-sync-groups.md) for scoped event delivery.
 
 ## Run the demo
 
@@ -341,7 +344,7 @@ Deeper material lives in [agent-docs/](agent-docs/):
 ## Project structure
 
 ```text
-.                      # the publishable zerodrift package (src/, __tests__/)
+.                      # the publishable zerodrift package
 |-- src/
 |-- agent-docs/         # architecture and API notes
 `-- examples/           # self-contained runnable demo (own Makefile + compose)
@@ -356,3 +359,7 @@ Deeper material lives in [agent-docs/](agent-docs/):
 - **Client**: TypeScript, MobX, IndexedDB, EventSource (SSE)
 - **Reference server**: Go, Gin, Bun ORM, Postgres (LISTEN/NOTIFY), pgx
 - **Protocol**: append-only changelog, monotonic sync id, sync group filtering
+
+## License
+
+MIT — see [LICENSE](LICENSE).
