@@ -4,11 +4,7 @@ import type { BaseModel } from "./BaseModel.js";
 // Enums
 // ---------------------------------------------------------------------------
 
-/** How a model is loaded into the client. Choose by *when* you need its rows.
- *
- * Upgrading from a pre-1.0 vendored copy: `Instant` was renamed to `Eager` and
- * `Local` to `LocalOnly` in the API-consolidation pass. The five members below
- * are the only ones the published enum exposes. */
+/** How a model is loaded into the client. Choose by *when* you need its rows. */
 export enum LoadStrategy {
   /** Loaded during bootstrap, fully resident, kept current by SSE. The
    * default — pick this unless a model is large or rarely needed. */
