@@ -4,6 +4,7 @@ import type {
   AnyFieldBuilder,
   EntityDef,
   FieldBuilder,
+  FieldKind,
   FieldMeta,
 } from "./types.js";
 
@@ -89,14 +90,53 @@ export function fromZod<Z extends z.ZodType>(
 }
 
 /**
- * Auto-derived `FieldBuilder` type for a Zod-object key. The `id` key is
- * special-cased to carry `{kind: "id"}` so `InferCreateInput` can treat it
- * as optional (BaseModel auto-assigns a UUID) — matching the runtime, which
- * routes the `id` key through `fields.id()` instead of `fromZod`.
+ * Maps Zod's `_zod.def.type` discriminator to a schema `FieldKind`. Mirrors
+ * the runtime `PRIMITIVE_KIND` map; anything not covered collapses to `"json"`,
+ * matching `fromZod`'s fallback.
  */
-type AutoFieldFromZod<K, T> = K extends "id"
+type ZodKindFromTypeName<T> = T extends "string"
+  ? "string"
+  : T extends "number" | "int"
+    ? "number"
+    : T extends "boolean"
+      ? "boolean"
+      : T extends "date"
+        ? "date"
+        : "json";
+
+/**
+ * Type-level analogue of `fromZod`'s runtime walker: peels off `nullable` /
+ * `optional` / `default` wrappers, stamping each on the accumulator, then
+ * collapses the leaf to a kind via `ZodKindFromTypeName`. The result is
+ * intersected with `FieldMeta` so `IsOptionalCreateField` sees the same
+ * `{kind, optional, default}` flags the runtime produces — keeping
+ * create-input optionality aligned for `.optional()` and `.default(...)`
+ * Zod fields, not just `id`.
+ */
+type ZodToFieldMeta<Z, Accum = Record<never, never>> = Z extends {
+  _zod: { def: { type: "nullable"; innerType: infer I } };
+}
+  ? ZodToFieldMeta<I, Accum & { nullable: true }>
+  : Z extends { _zod: { def: { type: "optional"; innerType: infer I } } }
+    ? ZodToFieldMeta<I, Accum & { optional: true }>
+    : Z extends { _zod: { def: { type: "default"; innerType: infer I } } }
+      ? ZodToFieldMeta<I, Accum & { default: unknown }>
+      : Z extends { _zod: { def: { type: infer T extends string } } }
+        ? Accum & { kind: ZodKindFromTypeName<T> }
+        : Accum;
+
+/**
+ * Auto-derived `FieldBuilder` type for a Zod-object key. The `id` key is
+ * special-cased to carry `{kind: "id"}` (the runtime routes `id` through
+ * `fields.id()` regardless of the Zod-declared id type). Every other key
+ * walks its Zod schema via `ZodToFieldMeta` so PK, optional, and default
+ * flags all flow into the field's create-input optionality the same way.
+ */
+type AutoFieldFromZod<K, ZS> = K extends "id"
   ? FieldBuilder<string, FieldMeta & { kind: "id" }>
-  : FieldBuilder<T>;
+  : ZS extends z.ZodType
+    ? FieldBuilder<z.infer<ZS>, FieldMeta & ZodToFieldMeta<ZS>>
+    : FieldBuilder<unknown, FieldMeta & { kind: FieldKind }>;
 
 /**
  * Per-field override for `entityFromZod`. Either a chaining function
@@ -108,13 +148,13 @@ export type EntityFromZodFieldOverride<AutoT = unknown> =
   | ((auto: FieldBuilder<AutoT>) => AnyFieldBuilder);
 
 type EntityFromZodFieldOverrides<Z extends z.ZodObject> = {
-  [K in keyof z.infer<Z> & string]?:
+  [K in keyof Z["shape"] & string]?:
     | AnyFieldBuilder
-    | ((auto: AutoFieldFromZod<K, z.infer<Z>[K]>) => unknown);
+    | ((auto: AutoFieldFromZod<K, Z["shape"][K]>) => unknown);
 };
 
 type NoExtraZodFieldKeys<Z extends z.ZodObject, F> = Record<
-  Exclude<keyof F, keyof z.infer<Z> & string>,
+  Exclude<keyof F, keyof Z["shape"] & string>,
   never
 >;
 
@@ -143,9 +183,9 @@ type FieldFromOverride<O, Auto> = O extends (...args: never[]) => infer R
  * entity's TS type so downstream helpers like `IndexedFieldKeys` see them.
  */
 type MergedFieldsFromZodObject<Z extends z.ZodObject, F> = {
-  [K in keyof z.infer<Z>]: K extends keyof F
-    ? FieldFromOverride<F[K], AutoFieldFromZod<K, z.infer<Z>[K]>>
-    : AutoFieldFromZod<K, z.infer<Z>[K]>;
+  [K in keyof Z["shape"]]: K extends keyof F
+    ? FieldFromOverride<F[K], AutoFieldFromZod<K, Z["shape"][K]>>
+    : AutoFieldFromZod<K, Z["shape"][K]>;
 };
 
 /** Non-`fields` portion of the opts — shared across the public type and
@@ -173,9 +213,9 @@ export interface EntityFromZodOpts<Z extends z.ZodObject = z.ZodObject>
    *     });
    */
   fields?: {
-    [K in keyof z.infer<Z> & string]?:
+    [K in keyof Z["shape"] & string]?:
       | AnyFieldBuilder
-      | ((auto: AutoFieldFromZod<K, z.infer<Z>[K]>) => AnyFieldBuilder);
+      | ((auto: AutoFieldFromZod<K, Z["shape"][K]>) => AnyFieldBuilder);
   };
 }
 

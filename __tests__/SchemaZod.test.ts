@@ -165,6 +165,62 @@ describe("entityFromZod — TS field inference", () => {
     expect(ok.itemName).toBe("x");
   });
 
+  it("marks `.default(...)` Zod fields optional in InferCreateInput", () => {
+    const schema = defineSchema({
+      entities: {
+        issue: entityFromZod(
+          z.object({
+            id: z.string(),
+            title: z.string().default(""),
+            priority: z.number().default(0),
+            sortOrder: z.number(),
+          }),
+          { loadStrategy: LoadStrategy.Eager, name: "ZodDefaultedIssue" },
+        ),
+      },
+      links: {},
+    });
+
+    expect(schema.entities.issue.fields.title.meta.default).toBe("");
+    expect(schema.entities.issue.fields.priority.meta.default).toBe(0);
+
+    type CreateIssue = InferCreateInput<typeof schema, "issue">;
+    // Defaulted Zod fields → optional in create input (engine fills in default).
+    expectTypeOf<CreateIssue["title"]>().toEqualTypeOf<string | undefined>();
+    expectTypeOf<CreateIssue["priority"]>().toEqualTypeOf<number | undefined>();
+    // Non-defaulted, non-optional fields stay required.
+    expectTypeOf<CreateIssue["sortOrder"]>().toEqualTypeOf<number>();
+
+    const ok: CreateIssue = { sortOrder: 1 };
+    expect(ok.sortOrder).toBe(1);
+  });
+
+  it("marks `.optional()` Zod fields optional in InferCreateInput without making them nullable", () => {
+    const schema = defineSchema({
+      entities: {
+        note: entityFromZod(
+          z.object({
+            id: z.string(),
+            body: z.string(),
+            tag: z.string().optional(),
+          }),
+          { loadStrategy: LoadStrategy.Eager, name: "ZodOptionalNote" },
+        ),
+      },
+      links: {},
+    });
+
+    expect(schema.entities.note.fields.tag.meta.optional).toBe(true);
+    expect(schema.entities.note.fields.tag.meta.nullable).toBe(false);
+
+    type CreateNote = InferCreateInput<typeof schema, "note">;
+    expectTypeOf<CreateNote["tag"]>().toEqualTypeOf<string | undefined>();
+    expectTypeOf<CreateNote["body"]>().toEqualTypeOf<string>();
+
+    const ok: CreateNote = { body: "hi" };
+    expect(ok.body).toBe("hi");
+  });
+
   it("preserves PK semantics when `id` is chained via a function override", () => {
     const schema = defineSchema({
       entities: {
