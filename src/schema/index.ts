@@ -44,6 +44,7 @@ export type {
   IndexedFieldKeys,
   InferCreateInput,
   InferEntity,
+  InferRecord,
   InferUpdateInput,
   RelationCollection,
 } from "./infer.js";

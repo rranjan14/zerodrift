@@ -138,6 +138,17 @@ export type InferEntity<S extends SchemaDef, K extends EntityKey<S>> =
   EntityFieldTypes<S, K> & SingularRelations<S, K> & ReverseCollections<S, K>;
 
 /**
+ * Alias for {@link InferEntity}. Provided so the three record-shape helpers
+ * read uniformly at call sites:
+ *
+ *     type Need       = InferRecord<typeof schema, "need">;
+ *     type NeedCreate = InferCreateInput<typeof schema, "need">;
+ *     type NeedUpdate = InferUpdateInput<typeof schema, "need">;
+ */
+export type InferRecord<S extends SchemaDef, K extends EntityKey<S>> =
+  InferEntity<S, K>;
+
+/**
  * A create-input field is optional when the runtime can fill it without
  * the caller: id-kind (BaseModel auto-assigns a UUID), defaulted fields,
  * and schema fields explicitly marked optional (e.g. via Zod's `.optional()`).

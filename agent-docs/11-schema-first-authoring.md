@@ -372,6 +372,24 @@ entityFromZod(ZodIssue, {
 
 Override keys are constrained to fields actually declared on the Zod object, so typos surface at compile time.
 
+## Naming record / input types
+
+Three helpers, all parameterized by the schema and an entity key, give first-class names for the shapes the store works in. Prefer them over re-deriving from `ReturnType<…peek>` at call sites:
+
+```typescript
+import type {
+  InferRecord,        // alias of InferEntity
+  InferCreateInput,
+  InferUpdateInput,
+} from "zerodrift/schema";
+
+type Issue       = InferRecord<typeof schema, "issue">;       // store.issue.peek(...) / .get(...) return shape
+type IssueCreate = InferCreateInput<typeof schema, "issue">;  // store.issue.create(input) argument
+type IssueUpdate = InferUpdateInput<typeof schema, "issue">;  // store.issue.patch(id, fields) argument
+```
+
+`InferCreateInput` already drops PK / defaulted / `.optional()` fields to optional, so an entity built with `entityFromZod(z.object({ id, title: z.string().default(""), … }))` accepts `{ teamId }` without `id` or `title`.
+
 ## Typed React hooks
 
 In `zerodrift/react`:
